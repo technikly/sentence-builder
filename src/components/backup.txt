@@ -1,0 +1,877 @@
+import React, { useState, useCallback, useEffect } from 'react';
+import ReactDOM from 'react-dom';
+import { Save, RefreshCw, Plus, Palette, Eye, Volume2, VolumeX, X } from 'lucide-react';
+
+// Theme configuration
+const themes = {
+    ocean: {
+        name: 'Ocean',
+        background: 'bg-blue-50',
+        primary: 'text-blue-600',
+        secondary: 'text-blue-800',
+        button: 'bg-blue-500 hover:bg-blue-600',
+        card: 'bg-white',
+        wordDot: 'bg-blue-200 hover:bg-blue-300',
+        sentenceDot: 'bg-green-400 hover:bg-green-500',
+        modal: 'bg-black bg-opacity-50'
+    },
+    forest: {
+        name: 'Forest',
+        background: 'bg-green-50',
+        primary: 'text-green-600',
+        secondary: 'text-green-800',
+        button: 'bg-green-500 hover:bg-green-600',
+        card: 'bg-white',
+        wordDot: 'bg-green-200 hover:bg-green-300',
+        sentenceDot: 'bg-emerald-400 hover:bg-emerald-500',
+        modal: 'bg-black bg-opacity-50'
+    },
+    sunset: {
+        name: 'Sunset',
+        background: 'bg-orange-50',
+        primary: 'text-orange-600',
+        secondary: 'text-orange-800',
+        button: 'bg-orange-500 hover:bg-orange-600',
+        card: 'bg-white',
+        wordDot: 'bg-orange-200 hover:bg-orange-300',
+        sentenceDot: 'bg-red-400 hover:bg-red-500',
+        modal: 'bg-black bg-opacity-50'
+    }
+};
+
+// Mapping from CSV headers to vocabularyDB categories
+const csvToVocabCategory = {
+    determiner: 'determiners',
+    noun: 'nouns',
+    verb: 'verbs',
+    adjective: 'adjectives',
+    adverb: 'adverbs',
+    preposition: 'prepositions',
+    conjunction: 'conjunctions'
+    // 'punctuation' is handled separately and not included in vocabularyDB
+};
+
+// Color mapping for word classes (used in sentences)
+const wordClassColors = {
+    determiner: 'text-purple-600',
+    noun: 'text-blue-600',
+    verb: 'text-green-600',
+    adjective: 'text-yellow-600',
+    adverb: 'text-pink-600',
+    preposition: 'text-indigo-600',
+    conjunction: 'text-red-600'
+};
+
+// Color mapping for word classes (used in word chooser modal)
+const wordClassBackgroundColors = {
+    determiner: 'bg-purple-500 hover:bg-purple-600',
+    noun: 'bg-blue-500 hover:bg-blue-600',
+    verb: 'bg-green-500 hover:bg-green-600',
+    adjective: 'bg-yellow-500 hover:bg-yellow-600',
+    adverb: 'bg-pink-500 hover:bg-pink-600',
+    preposition: 'bg-indigo-500 hover:bg-indigo-600',
+    conjunction: 'bg-red-500 hover:bg-red-600'
+};
+
+// IconButton Component
+const IconButton = ({ icon: Icon, label, onClick, className = '', size = 32 }) => (
+    <button
+        onClick={onClick}
+        className={`p-4 sm:p-6 rounded-xl transition-all duration-300 hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-300 ${className}`}
+        aria-label={label}
+        title={label}
+    >
+        <Icon size={size} className="text-white" />
+    </button>
+);
+
+// Modal Component using React Portal
+const Modal = ({ title, onClose, children, theme }) => {
+    return ReactDOM.createPortal(
+        <div
+            className={`fixed inset-0 ${theme.modal} backdrop-blur-sm flex items-center justify-center p-4 sm:p-8 z-50`}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-title"
+        >
+            <div className={`${theme.card} p-6 sm:p-10 rounded-2xl shadow-2xl max-w-3xl w-full max-h-[85vh] overflow-y-auto`}>
+                <div className="flex justify-between items-center mb-6 sm:mb-8">
+                    <h2 id="modal-title" className={`text-3xl sm:text-5xl font-bold ${theme.primary}`}>
+                        {title}
+                    </h2>
+                    <IconButton
+                        icon={X}
+                        label="Close modal"
+                        onClick={onClose}
+                        className={`${theme.button} hover:rotate-90`}
+                        size={24}
+                    />
+                </div>
+                {children}
+            </div>
+        </div>,
+        document.body
+    );
+};
+
+// Context Menu for Word Editing using React Portal
+const WordContextMenu = ({ onCapitalize, onUncapitalize, onAddPunctuation, onEditPunctuation, onEdit, onDelete, onClose, position, isCapitalized }) => (
+    ReactDOM.createPortal(
+        <div
+            className="fixed bg-white border rounded-lg shadow-lg z-50 min-w-[200px]"
+            style={{ top: position.y, left: position.x }}
+            role="menu"
+            aria-label="Word context menu"
+        >
+            {isCapitalized ? (
+                <button
+                    onClick={onUncapitalize}
+                    className="w-full text-left px-4 py-2 hover:bg-gray-100"
+                    role="menuitem"
+                >
+                    Remove Capital Letter
+                </button>
+            ) : (
+                <button
+                    onClick={onCapitalize}
+                    className="w-full text-left px-4 py-2 hover:bg-gray-100"
+                    role="menuitem"
+                >
+                    Add Capital Letter
+                </button>
+            )}
+            <button
+                onClick={onAddPunctuation}
+                className="w-full text-left px-4 py-2 hover:bg-gray-100"
+                role="menuitem"
+            >
+                Add Punctuation
+            </button>
+            <button
+                onClick={onEditPunctuation}
+                className="w-full text-left px-4 py-2 hover:bg-gray-100"
+                role="menuitem"
+            >
+                Edit Punctuation
+            </button>
+            <button
+                onClick={onEdit}
+                className="w-full text-left px-4 py-2 hover:bg-gray-100"
+                role="menuitem"
+            >
+                Edit Word
+            </button>
+            <button
+                onClick={onDelete}
+                className="w-full text-left px-4 py-2 hover:bg-gray-100 text-red-500"
+                role="menuitem"
+            >
+                Delete Word
+            </button>
+            <button
+                onClick={onClose}
+                className="w-full text-left px-4 py-2 hover:bg-gray-100 text-gray-500"
+                role="menuitem"
+            >
+                Cancel
+            </button>
+        </div>,
+        document.body
+    )
+);
+
+// Punctuation Editor Modal
+const PunctuationEditor = ({ sentenceIndex, wordIndex, sentences, setSentences, closeEditor, playSound, theme }) => {
+    const punctuationOptions = ['', '.', ',', '!', '?', ';'];
+    const currentPunctuation = sentences[sentenceIndex].words[wordIndex].punctuation;
+
+    const applyPunctuation = (punctuation) => {
+        const newSentences = [...sentences];
+        newSentences[sentenceIndex].words[wordIndex].punctuation = punctuation;
+        setSentences(newSentences);
+        playSound('change');
+        closeEditor();
+    };
+
+    return (
+        <div className="space-y-4 sm:space-y-6">
+            <h3 className={`text-xl sm:text-2xl font-semibold ${theme.secondary}`}>Current Sentence:</h3>
+            <p className={`text-lg sm:text-xl ${theme.primary}`}>
+                {sentences[sentenceIndex].words.map((word, idx) =>
+                    idx === wordIndex
+                        ? <strong key={idx}>{word.word}</strong>
+                        : word.word
+                ).join(' ')}{currentPunctuation}
+            </p>
+            <div className="flex flex-wrap gap-4">
+                {punctuationOptions.map((punct) => (
+                    <button
+                        key={punct || 'none'}
+                        onClick={() => applyPunctuation(punct)}
+                        className={`px-6 py-3 ${theme.button} text-white rounded-lg text-xl sm:text-2xl`}
+                    >
+                        {punct || 'None'}
+                    </button>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+// WordEditor Component for Editing Words (Modified to remove punctuation handling)
+const WordEditor = ({ sentenceIndex, wordIndex, sentences, setSentences, closeEditor, playSound, theme }) => {
+    const [editedWord, setEditedWord] = useState(sentences[sentenceIndex].words[wordIndex].word);
+
+    const saveEdits = () => {
+        const newSentences = [...sentences];
+        newSentences[sentenceIndex].words[wordIndex].word = editedWord;
+        setSentences(newSentences);
+        playSound('change');
+        closeEditor();
+    };
+
+    return (
+        <div className="space-y-4 sm:space-y-6">
+            <div>
+                <label className={`block text-lg sm:text-xl font-medium ${theme.primary} mb-2`} htmlFor="word-input">
+                    Word:
+                </label>
+                <input
+                    id="word-input"
+                    type="text"
+                    value={editedWord}
+                    onChange={(e) => setEditedWord(e.target.value)}
+                    className={`w-full p-2 sm:p-4 border rounded-lg ${theme.secondary} focus:outline-none focus:ring-2 focus:ring-blue-500`}
+                />
+            </div>
+            <div className="flex justify-end gap-4">
+                <button
+                    onClick={closeEditor}
+                    className={`px-4 sm:px-6 py-2 sm:py-3 ${theme.button} text-white rounded-lg hover:opacity-80`}
+                >
+                    Cancel
+                </button>
+                <button
+                    onClick={saveEdits}
+                    className={`px-4 sm:px-6 py-2 sm:py-3 ${theme.button} text-white rounded-lg hover:opacity-80`}
+                >
+                    Save
+                </button>
+            </div>
+        </div>
+    );
+};
+// SentenceBuilder Component
+const SentenceBuilder = () => {
+    const [sentences, setSentences] = useState([{
+        words: [
+            { word: 'The', type: 'determiner', punctuation: '' },
+            { word: 'dog', type: 'noun', punctuation: '.' }
+        ]
+    }]);
+    const [activeIndex, setActiveIndex] = useState(null);
+    const [activeSentence, setActiveSentence] = useState(null);
+    const [currentTheme, setCurrentTheme] = useState('ocean');
+    const [showPreview, setShowPreview] = useState(false);
+    const [showWordEditor, setShowWordEditor] = useState(false);
+    const [editingWord, setEditingWord] = useState(null);
+    const [soundEnabled, setSoundEnabled] = useState(true);
+    const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, sentenceIndex: null, wordIndex: null });
+    const [hoveredWordIndex, setHoveredWordIndex] = useState(null);
+
+    const [vocabularyDB, setVocabularyDB] = useState({
+        determiners: ['The', 'A', 'That', 'This'],
+        nouns: ['dog', 'cat', 'bird', 'rabbit', 'fish', 'car', 'tree', 'house'],
+        verbs: ['ran', 'jumped', 'walked', 'slept', 'played', 'drove', 'climbed', 'ate'],
+        adjectives: ['happy', 'quick', 'sleepy', 'hungry', 'playful', 'bright', 'dark', 'silent'],
+        adverbs: ['quickly', 'silently', 'happily', 'sadly', 'gracefully', 'loudly', 'eagerly', 'brightly'],
+        prepositions: ['with', 'under', 'behind', 'near', 'beside', 'between', 'above', 'around'],
+        conjunctions: ['and', 'but', 'or', 'so', 'yet', 'for', 'nor', 'although']
+    });
+
+    const theme = themes[currentTheme];
+
+    const parseCSV = (csvText) => {
+        const lines = csvText.trim().split('\n');
+        const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+        const rows = lines.slice(1);
+        const result = rows.map(line => {
+            const values = line.split(',').map(v => v.trim());
+            const obj = {};
+            headers.forEach((header, index) => {
+                obj[header] = values[index] || '';
+            });
+            return obj;
+        });
+        return result;
+    };
+
+    useEffect(() => {
+        fetch('/vocabulary.csv')
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('CSV not found');
+                }
+                return response.text();
+            })
+            .then(csvText => {
+                const parsed = parseCSV(csvText);
+                setVocabularyDB(prev => {
+                    const newVocab = { ...prev };
+                    parsed.forEach(row => {
+                        Object.keys(row).forEach(header => {
+                            if (header === 'punctuation') return;
+                            const category = csvToVocabCategory[header];
+                            if (!category) return;
+                            const word = row[header].trim();
+                            if (word) {
+                                const lowerCaseWords = newVocab[category].map(w => w.toLowerCase());
+                                if (!lowerCaseWords.includes(word.toLowerCase())) {
+                                    newVocab[category].push(word);
+                                }
+                            }
+                        });
+                    });
+                    return newVocab;
+                });
+            })
+            .catch(error => {
+                console.log('No vocabulary.csv found or failed to load:', error);
+            });
+    }, []);
+
+    const playSound = useCallback((soundName) => {
+        if (soundEnabled) {
+            console.log(`Playing sound: ${soundName}`);
+        }
+    }, [soundEnabled]);
+
+    const WordDot = ({ onClick, className = '' }) => (
+        <button
+            onClick={onClick}
+            className={`w-10 h-10 sm:w-12 sm:h-12 rounded-full ${theme.wordDot} transition-all duration-300 shadow-md hover:shadow-lg hover:scale-110 focus:outline-none focus:ring-4 focus:ring-blue-300 ${className}`}
+            aria-label="Add a word here"
+            title="Click to add a word"
+        />
+    );
+
+    const SentenceDot = ({ onClick }) => (
+        <button
+            onClick={onClick}
+            className={`flex items-center justify-center w-16 h-16 sm:w-20 sm:h-20 rounded-full ${theme.sentenceDot} transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-110 focus:outline-none focus:ring-4 focus:ring-green-300`}
+            aria-label="Add a new sentence"
+            title="Click to add a new sentence"
+        >
+            <Plus size={32} className="text-white transition-transform" />
+        </button>
+    );
+
+    const handleAddPunctuation = (sentenceIndex, wordIndex) => {
+        setEditingWord({ sentenceIndex, wordIndex, mode: 'addPunctuation' });
+        setShowWordEditor(true);
+    };
+
+    const handleEditPunctuation = (sentenceIndex, wordIndex) => {
+        setEditingWord({ sentenceIndex, wordIndex, mode: 'editPunctuation' });
+        setShowWordEditor(true);
+    };
+
+    const toggleCase = (sentenceIndex, wordIndex) => {
+        const newSentences = [...sentences];
+        const word = newSentences[sentenceIndex].words[wordIndex].word;
+        newSentences[sentenceIndex].words[wordIndex].word =
+            word[0] === word[0].toUpperCase()
+                ? word.charAt(0).toLowerCase() + word.slice(1)
+                : word.charAt(0).toUpperCase() + word.slice(1);
+        setSentences(newSentences);
+        playSound('change');
+    };
+
+    const handleWordSelect = (word, type) => {
+        if (activeIndex === null || activeSentence === null) return;
+
+        playSound('select');
+
+        const newSentences = [...sentences];
+        const currentSentence = newSentences[activeSentence];
+
+        const newWord = {
+            word: word,
+            type: type,
+            punctuation: ''
+        };
+
+        if (activeIndex === currentSentence.words.length) {
+            currentSentence.words.push(newWord);
+        } else {
+            currentSentence.words.splice(activeIndex, 0, newWord);
+        }
+
+        setSentences(newSentences);
+        setActiveIndex(null);
+        setActiveSentence(null);
+    };
+
+    const addNewSentence = (position) => {
+        playSound('add');
+        const determiner = vocabularyDB.determiners[
+            Math.floor(Math.random() * vocabularyDB.determiners.length)
+        ];
+        const adjective = vocabularyDB.adjectives[
+            Math.floor(Math.random() * vocabularyDB.adjectives.length)
+        ];
+        const noun = vocabularyDB.nouns[
+            Math.floor(Math.random() * vocabularyDB.nouns.length)
+        ];
+        const verb = vocabularyDB.verbs[
+            Math.floor(Math.random() * vocabularyDB.verbs.length)
+        ];
+
+        const newSentence = {
+            words: [
+                { word: determiner, type: 'determiner', punctuation: '' },
+                { word: adjective, type: 'adjective', punctuation: '' },
+                { word: noun, type: 'noun', punctuation: '.' },
+                { word: verb, type: 'verb', punctuation: '' }
+            ]
+        };
+
+        const newSentences = [...sentences];
+        newSentences.splice(position, 0, newSentence);
+        setSentences(newSentences);
+    };
+
+    const deleteSentence = (index) => {
+        const newSentences = [...sentences];
+        newSentences.splice(index, 1);
+        setSentences(newSentences);
+        playSound('delete');
+    };
+
+    const handleStartingPhraseChange = (sentenceIndex) => {
+        playSound('change');
+        const determiner = vocabularyDB.determiners[
+            Math.floor(Math.random() * vocabularyDB.determiners.length)
+        ];
+        const adjective = vocabularyDB.adjectives[
+            Math.floor(Math.random() * vocabularyDB.adjectives.length)
+        ];
+        const noun = vocabularyDB.nouns[
+            Math.floor(Math.random() * vocabularyDB.nouns.length)
+        ];
+
+        const newSentences = [...sentences];
+        newSentences[sentenceIndex].words = [
+            { word: determiner, type: 'determiner', punctuation: '' },
+            { word: adjective, type: 'adjective', punctuation: '' },
+            { word: noun, type: 'noun', punctuation: '.' }
+        ];
+        setSentences(newSentences);
+    };
+
+    const saveSentences = () => {
+        playSound('save');
+        const text = sentences.map(sentence =>
+            sentence.words.map(w => w.word + w.punctuation).join(' ')
+        ).join('\n');
+
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'my-story.txt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    };
+
+    const toggleSound = () => {
+        setSoundEnabled(!soundEnabled);
+    };
+
+    const handleWordClick = (e, sentenceIndex, wordIndex) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        let x = e.clientX + window.scrollX;
+        let y = e.clientY + window.scrollY;
+
+        const menuWidth = 200;
+        const menuHeight = 250;
+
+        if (x + menuWidth > window.innerWidth + window.scrollX) {
+            x = window.innerWidth + window.scrollX - menuWidth - 10;
+        }
+
+        if (y + menuHeight > window.innerHeight + window.scrollY) {
+            y = window.innerHeight + window.scrollY - menuHeight - 10;
+        }
+
+        setContextMenu({
+            visible: true,
+            x,
+            y,
+            sentenceIndex,
+            wordIndex
+        });
+    };
+
+    const deleteWord = (sentenceIndex, wordIndex) => {
+        const newSentences = [...sentences];
+        const sentence = newSentences[sentenceIndex];
+
+        if (sentence.words.length === 1) {
+            alert("Cannot delete the last word of a sentence.");
+            return;
+        }
+
+        sentence.words.splice(wordIndex, 1);
+
+        const lastWord = sentence.words[sentence.words.length - 1];
+        if (!lastWord.punctuation) {
+            lastWord.punctuation = '.';
+        }
+
+        setSentences(newSentences);
+        playSound('delete');
+    };
+
+    const handleClickOutside = () => {
+        if (contextMenu.visible) {
+            setContextMenu({ ...contextMenu, visible: false });
+        }
+    };
+
+    useEffect(() => {
+        const handleScroll = () => {
+            if (contextMenu.visible) {
+                setContextMenu({ ...contextMenu, visible: false });
+            }
+        };
+
+        window.addEventListener('scroll', handleScroll);
+        window.addEventListener('resize', handleScroll);
+        return () => {
+            window.removeEventListener('scroll', handleScroll);
+            window.removeEventListener('resize', handleScroll);
+        };
+    }, [contextMenu.visible]);
+
+    useEffect(() => {
+        window.addEventListener('click', handleClickOutside);
+        return () => {
+            window.removeEventListener('click', handleClickOutside);
+        };
+    }, []);
+
+    return (
+        <div className={`min-h-screen ${theme.background} p-4 sm:p-8 transition-colors duration-500`}>
+            <div className="max-w-7xl mx-auto">
+                {/* Header */}
+                <header className="flex flex-col sm:flex-row justify-between items-center mb-8 sm:mb-12 p-4 sm:p-6 bg-white rounded-2xl shadow-lg">
+                    <h1 className={`text-3xl sm:text-5xl font-bold ${theme.primary} transition-colors duration-500 text-center sm:text-left`}>
+                        Sentence Builder
+                    </h1>
+                    <nav className="flex flex-wrap justify-center sm:justify-end gap-4 sm:gap-6 mt-4 sm:mt-0" aria-label="Main controls">
+                        <IconButton
+                            icon={soundEnabled ? Volume2 : VolumeX}
+                            label={soundEnabled ? "Turn sound off" : "Turn sound on"}
+                            onClick={toggleSound}
+                            className={`${theme.button}`}
+                            size={24}
+                        />
+                        <IconButton
+                            icon={Eye}
+                            label="Preview story"
+                            onClick={() => setShowPreview(true)}
+                            className={`${theme.button}`}
+                            size={24}
+                        />
+                        <div className="relative group">
+                            <IconButton
+                                icon={Palette}
+                                label="Change theme"
+                                className={`${theme.button}`}
+                                size={24}
+                            />
+                            <div className="absolute right-0 mt-2 py-2 w-40 bg-white rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-opacity">
+                                {Object.entries(themes).map(([key, value]) => (
+                                    <button
+                                        key={key}
+                                        onClick={() => setCurrentTheme(key)}
+                                        className={`block w-full px-4 py-2 text-left hover:bg-gray-100 transition-colors ${currentTheme === key ? "font-bold" : ""}`}
+                                    >
+                                        {value.name}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    </nav>
+                </header>
+
+                <main className="space-y-8 sm:space-y-12">
+                    {sentences.length === 0 ? (
+                        <div className="flex justify-center">
+                            <SentenceDot onClick={() => addNewSentence(0)} />
+                        </div>
+                    ) : (
+                        sentences.map((sentence, sentenceIndex) => (
+                            <div key={sentenceIndex}>
+                                <div className={`flex flex-wrap items-center gap-4 sm:gap-8 p-8 sm:p-16 ${theme.card} rounded-2xl shadow-xl`}>
+                                    <WordDot
+                                        onClick={() => {
+                                            setActiveIndex(0);
+                                            setActiveSentence(sentenceIndex);
+                                            playSound('select');
+                                        }}
+                                    />
+
+                                    {sentence.words.map((wordObj, wordIndex) => (
+                                        <React.Fragment key={wordIndex}>
+                                            <div className="flex items-center gap-2 relative">
+                                                <span
+                                                    onClick={(e) => handleWordClick(e, sentenceIndex, wordIndex)}
+                                                    className={`text-xl sm:text-4xl font-bold ${wordClassColors[wordObj.type]} tracking-wide transition-colors duration-500 cursor-pointer hover:opacity-80 relative z-10`}
+                                                >
+                                                    {wordObj.word}{wordObj.punctuation}
+                                                </span>
+
+                                                {/* Context Menu */}
+                                                {contextMenu.visible &&
+                                                    contextMenu.sentenceIndex === sentenceIndex &&
+                                                    contextMenu.wordIndex === wordIndex && (
+                                                    <WordContextMenu
+                                                        onCapitalize={() => {
+                                                            toggleCase(sentenceIndex, wordIndex);
+                                                            setContextMenu({ ...contextMenu, visible: false });
+                                                        }}
+                                                        onUncapitalize={() => {
+                                                            toggleCase(sentenceIndex, wordIndex);
+                                                            setContextMenu({ ...contextMenu, visible: false });
+                                                        }}
+                                                        onAddPunctuation={() => handleAddPunctuation(sentenceIndex, wordIndex)}
+                                                        onEditPunctuation={() => handleEditPunctuation(sentenceIndex, wordIndex)}
+                                                        onEdit={() => {
+                                                            setEditingWord({ sentenceIndex, wordIndex, mode: 'edit' });
+                                                            setShowWordEditor(true);
+                                                            setContextMenu({ ...contextMenu, visible: false });
+                                                        }}
+                                                        onDelete={() => {
+                                                            deleteWord(sentenceIndex, wordIndex);
+                                                            setContextMenu({ ...contextMenu, visible: false });
+                                                        }}
+                                                        onClose={() => setContextMenu({ ...contextMenu, visible: false })}
+                                                        position={{ x: contextMenu.x, y: contextMenu.y }}
+                                                        isCapitalized={wordObj.word[0] === wordObj.word[0].toUpperCase()}
+                                                    />
+                                                )}
+                                            </div>
+<WordDot
+                                                onClick={() => {
+                                                    setActiveIndex(wordIndex + 1);
+                                                    setActiveSentence(sentenceIndex);
+                                                    playSound('select');
+                                                }}
+                                            />
+                                        </React.Fragment>
+                                    ))}
+
+                                    <div className="ml-4 sm:ml-8 flex items-center gap-2">
+                                        {/* Delete Sentence Button */}
+                                        <IconButton
+                                            icon={X}
+                                            label="Delete sentence"
+                                            onClick={() => deleteSentence(sentenceIndex)}
+                                            className="bg-red-500 hover:bg-red-600"
+                                            size={24}
+                                        />
+                                        {/* Existing Refresh Button */}
+                                        <IconButton
+                                            icon={RefreshCw}
+                                            label="Change starting phrase"
+                                            onClick={() => handleStartingPhraseChange(sentenceIndex)}
+                                            className={`${theme.button} hover:rotate-180`}
+                                            size={24}
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Add Sentence Button after each sentence */}
+                                <div className="flex justify-center mt-4 sm:mt-8">
+                                    <SentenceDot onClick={() => addNewSentence(sentenceIndex + 1)} />
+                                </div>
+                            </div>
+                        ))
+                    )}
+
+                    {/* Save Button (only when there are sentences) */}
+                    {sentences.length > 0 && (
+                        <div className="flex justify-center">
+                            <button
+                                onClick={saveSentences}
+                                className={`flex items-center gap-2 sm:gap-4 px-6 sm:px-12 py-4 sm:py-6 ${theme.button} text-white rounded-xl text-lg sm:text-4xl font-semibold transition-all duration-300 hover:scale-105 focus:outline-none focus:ring-4 focus:ring-green-300`}
+                            >
+                                <Save size={24} className="sm:hidden" />
+                                <Save size={40} className="hidden sm:inline" />
+                                <span className="hidden sm:inline">Save My Story</span>
+                            </button>
+                        </div>
+                    )}
+                </main>
+
+                {/* Word Selection Modal */}
+                {activeIndex !== null && activeSentence !== null && (
+                    <Modal
+                        title="Choose a Word to Add"
+                        onClose={() => {
+                            setActiveIndex(null);
+                            setActiveSentence(null);
+                            setHoveredWordIndex(null); // Reset hovered word index on close
+                        }}
+                        theme={theme}
+                    >
+                        <div className="flex flex-col sm:flex-row gap-4 sm:gap-8">
+                            {/* Window 1: Current Sentence */}
+                            <div className="flex-1 bg-gray-50 p-4 rounded-lg shadow-lg">
+                                <h3 className={`text-xl sm:text-2xl font-semibold mb-4 ${theme.secondary}`}>
+                                    Current Sentence:
+                                </h3>
+                                <div className="flex flex-wrap gap-2 items-center">
+                                    {sentences[activeSentence].words.map((wordObj, idx) => (
+                                        <React.Fragment key={idx}>
+                                            {/* Render each word */}
+                                            <span
+                                                className={`text-xl sm:text-2xl font-semibold ${wordClassColors[wordObj.type]} transition-transform duration-300`}
+                                            >
+                                                {wordObj.word}{wordObj.punctuation}
+                                            </span>
+                                            {/* Add the pulsating red dot or hovered word at the active index */}
+                                            {idx === activeIndex - 1 && (
+                                                hoveredWordIndex ? (
+                                                    <span
+                                                        className={`text-xl sm:text-2xl font-semibold ${wordClassColors[hoveredWordIndex.type]} transition-transform duration-300`}
+                                                    >
+                                                        {hoveredWordIndex.word}
+                                                    </span>
+                                                ) : (
+                                                    <span className="w-4 h-4 bg-red-500 rounded-full animate-pulse"></span>
+                                                )
+                                            )}
+                                        </React.Fragment>
+                                    ))}
+                                    {/* If activeIndex is at the end of the sentence */}
+                                    {activeIndex === sentences[activeSentence].words.length && (
+                                        hoveredWordIndex ? (
+                                            <span
+                                                className={`text-xl sm:text-2xl font-semibold ${wordClassColors[hoveredWordIndex.type]} transition-transform duration-300`}
+                                            >
+                                                {hoveredWordIndex.word}
+                                            </span>
+                                        ) : (
+                                            <span className="w-4 h-4 bg-red-500 rounded-full animate-pulse"></span>
+                                        )
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Window 2: Word Bank */}
+                            <div className="flex-1 bg-white p-4 rounded-lg shadow-lg overflow-y-auto max-h-[50vh]">
+                                <h3 className={`text-xl sm:text-2xl font-semibold mb-4 ${theme.secondary}`}>
+                                    Word Bank:
+                                </h3>
+                                {Object.entries(vocabularyDB).map(([category, words]) => (
+                                    <div key={category} className="mb-4">
+                                        <h4 className={`text-lg font-medium ${theme.primary} capitalize`}>
+                                            {category.replace(/([A-Z])/g, ' $1').trim()}:
+                                        </h4>
+                                        <div className="flex flex-wrap gap-2 sm:gap-4">
+                                            {words.map((word) => (
+                                                <button
+                                                    key={word}
+                                                    onMouseEnter={() => setHoveredWordIndex({ word, type: category.slice(0, -1) })}
+                                                    onMouseLeave={() => setHoveredWordIndex(null)}
+                                                    onClick={() => {
+                                                        handleWordSelect(word, category.slice(0, -1));
+                                                    }}
+                                                    className={`px-4 sm:px-6 py-2 sm:py-3 ${wordClassBackgroundColors[category.slice(0, -1)]} rounded-xl text-sm sm:text-2xl text-white transition-all duration-300 hover:scale-105`}
+                                                >
+                                                    {word}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </Modal>
+                )}
+
+                {/* Word Editor or Punctuation Editor Modal */}
+                {showWordEditor && editingWord && (
+                    <Modal
+                        title={
+                            editingWord.mode === 'addPunctuation'
+                                ? 'Add Punctuation'
+                                : editingWord.mode === 'editPunctuation'
+                                    ? 'Edit Punctuation'
+                                    : 'Edit Word'
+                        }
+                        onClose={() => {
+                            setShowWordEditor(false);
+                            setEditingWord(null);
+                        }}
+                        theme={theme}
+                    >
+                        {editingWord.mode === 'addPunctuation' || editingWord.mode === 'editPunctuation' ? (
+                            <PunctuationEditor
+                                sentenceIndex={editingWord.sentenceIndex}
+                                wordIndex={editingWord.wordIndex}
+                                sentences={sentences}
+                                setSentences={setSentences}
+                                closeEditor={() => {
+                                    setShowWordEditor(false);
+                                    setEditingWord(null);
+                                }}
+                                playSound={playSound}
+                                theme={theme}
+                            />
+                        ) : (
+                            <WordEditor
+                                sentenceIndex={editingWord.sentenceIndex}
+                                wordIndex={editingWord.wordIndex}
+                                sentences={sentences}
+                                setSentences={setSentences}
+                                closeEditor={() => {
+                                    setShowWordEditor(false);
+                                    setEditingWord(null);
+                                }}
+                                playSound={playSound}
+                                theme={theme}
+                            />
+                        )}
+                    </Modal>
+                )}
+
+                {/* Preview Modal */}
+                {showPreview && (
+                    <Modal
+                        title="Your Story"
+                        onClose={() => setShowPreview(false)}
+                        theme={theme}
+                    >
+                        <div className="space-y-6 sm:space-y-8">
+                            {sentences.map((sentence, index) => (
+                                <p key={index} className={`text-xl sm:text-4xl ${theme.secondary} leading-relaxed`}>
+                                    {sentence.words.map(w => w.word + w.punctuation).join(' ')}
+                                </p>
+                            ))}
+                        </div>
+                    </Modal>
+                )}
+            </div>
+        </div>
+    );
+};
+
+export default SentenceBuilder;
