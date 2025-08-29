@@ -1,5 +1,5 @@
-import SentenceBuilder from './components/SentenceBuilder'
-import './App.css'
+import SentenceBuilder from './components/SentenceBuilder';
+import './App.css';
 
 function App() {
   return (
@@ -8,7 +8,7 @@ function App() {
         <SentenceBuilder />
       </main>
     </div>
-  )
+  );
 }
 
-export default App
+export default App;
