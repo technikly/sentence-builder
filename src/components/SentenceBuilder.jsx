@@ -1,15 +1,7 @@
 // src/SentenceBuilder.jsx
 
 import { useState, useCallback, useEffect, Fragment } from 'react';
-import {
-  Save,
-  RefreshCw,
-  Eye,
-  Volume2,
-  VolumeX,
-  X,
-  Palette
-} from 'lucide-react';
+import { Save, Eye, Volume2, VolumeX, X, Palette } from 'lucide-react';
 
 import { themes } from './themes';
 import {
@@ -29,7 +21,7 @@ import { fetchWordClass, fetchSuggestions } from '../utils/dictionary';
 import { initializeSpellChecker, checkSpelling, getSuggestions } from '../spellChecker';
 
 // Import TTS functions and configurations
-import { speakText, initializeVoices } from './tts';
+import { speakText } from './tts';
 
 const SentenceBuilder = () => {
   /**
@@ -208,16 +200,7 @@ const SentenceBuilder = () => {
    * Text-to-Speech Initialization
    * ---------------------------
    */
-  useEffect(() => {
-    initializeVoices()
-      .then((voices) => {
-        console.log('Available voices:', voices);
-        // Optionally, set a default voice or handle voice selection here
-      })
-      .catch((error) => {
-        console.error('Error initializing voices:', error);
-      });
-  }, []);
+  // No voice initialization needed for online TTS
 
   /**
    * ---------------------------
@@ -414,32 +397,7 @@ const SentenceBuilder = () => {
     setSentences(newSentences);
   };
 
-  /**
-   * Randomizes the first 3 words in a sentence (determiner, adjective, noun)
-   * and ensures the last word has punctuation. If the sentence is empty,
-   * it will create a new set of 3 words.
-   */
-  const randomizeStartingPhrase = (sentenceIndex) => {
-    playSound('change');
-    const determiner =
-      vocabularyDB.determiners[
-        Math.floor(Math.random() * vocabularyDB.determiners.length)
-      ];
-    const adjective =
-      vocabularyDB.adjectives[
-        Math.floor(Math.random() * vocabularyDB.adjectives.length)
-      ];
-    const noun =
-      vocabularyDB.nouns[Math.floor(Math.random() * vocabularyDB.nouns.length)];
-
-    const newSentences = [...sentences];
-    newSentences[sentenceIndex].words = [
-      { word: determiner, type: 'determiner', punctuation: '' },
-      { word: adjective, type: 'adjective', punctuation: '' },
-      { word: noun, type: 'noun', punctuation: '.' }
-    ];
-    setSentences(newSentences);
-  };
+  // Removed shuffle functionality for cleaner experience
 
   /**
    * ---------------------------
@@ -773,14 +731,6 @@ const SentenceBuilder = () => {
                       className="bg-red-500 hover:bg-red-600"
                       size={24}
                     />
-                    <IconButton
-                      icon={RefreshCw}
-                      label="Randomize starting words"
-                      onClick={() => randomizeStartingPhrase(sentenceIndex)}
-                      className={`${theme.button} hover:rotate-180`}
-                      size={24}
-                    />
-
                     {/* New TTS Button */}
                     <IconButton
                       icon={Volume2}
@@ -831,21 +781,25 @@ const SentenceBuilder = () => {
          * =====================================
          */}
         {activeIndex !== null && activeSentenceIndex !== null && (
-          <ResizableDraggableModal
-            title="Choose a Word to Insert"
-            onClose={() => {
-              setActiveIndex(null);
-              setActiveSentenceIndex(null);
-              setHoveredWordIndex(null);
-              setCustomWord('');
-              setCustomWordType('unknown');
-            }}
-            theme={theme}
-            className="" // Removed width and height limiting classes
-          >
+          <div className="fixed bottom-0 left-0 w-full bg-white border-t border-gray-300 p-4 z-50 shadow-lg">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className={`font-semibold ${theme.primary}`}>Choose a Word to Insert</h2>
+              <button
+                onClick={() => {
+                  setActiveIndex(null);
+                  setActiveSentenceIndex(null);
+                  setHoveredWordIndex(null);
+                  setCustomWord('');
+                  setCustomWordType('unknown');
+                }}
+                aria-label="Close"
+              >
+                <X size={24} />
+              </button>
+            </div>
             <div className="flex flex-col lg:flex-row gap-4 lg:gap-8">
-              {/* 
-                PREVIEW of CURRENT SENTENCE 
+              {/*
+                PREVIEW of CURRENT SENTENCE
               */}
               <div className="flex-1 bg-gray-50 p-6 rounded-lg shadow-lg">
                 <h3
@@ -1074,7 +1028,7 @@ const SentenceBuilder = () => {
                 ))}
               </div>
             </div>
-          </ResizableDraggableModal>
+          </div>
         )}
 
         {/**
@@ -1083,21 +1037,25 @@ const SentenceBuilder = () => {
          * =====================================
          */}
         {showWordEditor && editingWord && (
-          <ResizableDraggableModal
-            title={
-              editingWord.mode === 'addPunctuation'
-                ? 'Add Punctuation'
-                : editingWord.mode === 'editPunctuation'
-                ? 'Edit Punctuation'
-                : 'Edit Word'
-            }
-            onClose={() => {
-              setShowWordEditor(false);
-              setEditingWord(null);
-            }}
-            theme={theme}
-            className="" // Removed width and height limiting classes
-          >
+          <div className="fixed bottom-0 left-0 w-full bg-white border-t border-gray-300 p-4 z-50 shadow-lg">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className={`font-semibold ${theme.primary}`}>
+                {editingWord.mode === 'addPunctuation'
+                  ? 'Add Punctuation'
+                  : editingWord.mode === 'editPunctuation'
+                  ? 'Edit Punctuation'
+                  : 'Edit Word'}
+              </h2>
+              <button
+                onClick={() => {
+                  setShowWordEditor(false);
+                  setEditingWord(null);
+                }}
+                aria-label="Close"
+              >
+                <X size={24} />
+              </button>
+            </div>
             {editingWord.mode === 'addPunctuation' ||
             editingWord.mode === 'editPunctuation' ? (
               <PunctuationEditor
@@ -1126,7 +1084,7 @@ const SentenceBuilder = () => {
                 theme={theme}
               />
             )}
-          </ResizableDraggableModal>
+          </div>
         )}
 
         {/**
