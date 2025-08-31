@@ -21,11 +21,13 @@ export const initializeSpellChecker = () => {
 
 export const checkSpelling = (word) => {
   if (!spell) return true; // Assume correct if spell checker not initialized
-  return spell.correct(word);
+  const sanitized = word.toLowerCase().replace(/[^a-z']/g, '');
+  return spell.correct(sanitized);
 };
 
 export const getSuggestions = (word) => {
   if (!spell) return [];
-  const suggestions = spell.suggest(word);
+  const sanitized = word.toLowerCase().replace(/[^a-z']/g, '');
+  const suggestions = spell.suggest(sanitized);
   return filterChildFriendly(suggestions);
 };
