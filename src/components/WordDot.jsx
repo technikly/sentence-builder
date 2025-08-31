@@ -1,6 +1,6 @@
 // WordDot.jsx
 
-import React from 'react';
+import PropTypes from 'prop-types';
 
 const WordDot = ({ onClick, className = '', theme }) => (
   <button
@@ -12,3 +12,11 @@ const WordDot = ({ onClick, className = '', theme }) => (
 );
 
 export default WordDot;
+
+WordDot.propTypes = {
+  onClick: PropTypes.func.isRequired,
+  className: PropTypes.string,
+  theme: PropTypes.shape({
+    wordDot: PropTypes.string.isRequired
+  }).isRequired
+};

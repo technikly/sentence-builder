@@ -1,6 +1,7 @@
 // WordEditor.jsx
 
-import React, { useState } from 'react';
+import { useState } from 'react';
+import PropTypes from 'prop-types';
 
 const WordEditor = ({
   sentenceIndex,
@@ -59,3 +60,17 @@ const WordEditor = ({
 };
 
 export default WordEditor;
+
+WordEditor.propTypes = {
+  sentenceIndex: PropTypes.number.isRequired,
+  wordIndex: PropTypes.number.isRequired,
+  sentences: PropTypes.array.isRequired,
+  setSentences: PropTypes.func.isRequired,
+  closeEditor: PropTypes.func.isRequired,
+  playSound: PropTypes.func.isRequired,
+  theme: PropTypes.shape({
+    primary: PropTypes.string.isRequired,
+    secondary: PropTypes.string.isRequired,
+    button: PropTypes.string.isRequired
+  }).isRequired
+};

@@ -15,7 +15,7 @@ export const generateNewSentence = (vocabulary) => {
   };
 };
 
-export const toggleCase = (sentences, sentenceIndex, wordIndex, setSentences) => {
+export const toggleCase = (sentences, sentenceIndex, wordIndex) => {
   const newSentences = [...sentences];
   const word = newSentences[sentenceIndex].words[wordIndex].word;
   newSentences[sentenceIndex].words[wordIndex].word = 
@@ -68,7 +68,7 @@ export const handleWordClick = (e, sentenceIndex, wordIndex, setContextMenu) => 
   });
 };
 
-export const togglePunctuation = (sentences, sentenceIndex, wordIndex, setSentences) => {
+export const togglePunctuation = (sentences, sentenceIndex, wordIndex) => {
   const newSentences = [...sentences];
   const currentPunct = newSentences[sentenceIndex].words[wordIndex].punctuation;
   const punctOptions = ['', '.', ',', '!', '?', ';'];

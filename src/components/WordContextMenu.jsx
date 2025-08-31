@@ -1,7 +1,7 @@
 // WordContextMenu.jsx
 
-import React from 'react';
 import ReactDOM from 'react-dom';
+import PropTypes from 'prop-types';
 
 const WordContextMenu = ({
   onCapitalize,
@@ -86,3 +86,19 @@ const WordContextMenu = ({
   );
 
 export default WordContextMenu;
+
+WordContextMenu.propTypes = {
+  onCapitalize: PropTypes.func.isRequired,
+  onUncapitalize: PropTypes.func.isRequired,
+  onAddPunctuation: PropTypes.func.isRequired,
+  onEditPunctuation: PropTypes.func.isRequired,
+  onEdit: PropTypes.func.isRequired,
+  onDelete: PropTypes.func.isRequired,
+  onClose: PropTypes.func.isRequired,
+  position: PropTypes.shape({
+    x: PropTypes.number.isRequired,
+    y: PropTypes.number.isRequired
+  }).isRequired,
+  isCapitalized: PropTypes.bool.isRequired,
+  hasPunctuation: PropTypes.bool.isRequired
+};

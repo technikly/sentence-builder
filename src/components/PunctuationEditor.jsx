@@ -1,6 +1,6 @@
 // PunctuationEditor.jsx
 
-import React from 'react';
+import PropTypes from 'prop-types';
 
 const PunctuationEditor = ({
   sentenceIndex,
@@ -52,3 +52,17 @@ const PunctuationEditor = ({
 };
 
 export default PunctuationEditor;
+
+PunctuationEditor.propTypes = {
+  sentenceIndex: PropTypes.number.isRequired,
+  wordIndex: PropTypes.number.isRequired,
+  sentences: PropTypes.array.isRequired,
+  setSentences: PropTypes.func.isRequired,
+  closeEditor: PropTypes.func.isRequired,
+  playSound: PropTypes.func.isRequired,
+  theme: PropTypes.shape({
+    secondary: PropTypes.string.isRequired,
+    primary: PropTypes.string.isRequired,
+    button: PropTypes.string.isRequired
+  }).isRequired
+};
