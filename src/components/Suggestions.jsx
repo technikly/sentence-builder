@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { wordClassBackgroundColours } from './mappings';
 import { Lightbulb } from 'lucide-react';
 import PropTypes from 'prop-types';
+import { filterChildFriendly } from '../utils/filterSuggestions.js';
 
 const Suggestions = ({
   sentences,
@@ -57,7 +58,9 @@ const Suggestions = ({
       combinedDB[key] = [...combinedDB[key], ...wordieDB[key]];
     });
 
-    const possibleWords = combinedDB[`${suggestedType}s`] || [];
+    const possibleWords = filterChildFriendly(
+      combinedDB[`${suggestedType}s`] || []
+    );
 
     if (possibleWords.length === 0) {
       setSuggestedWord(null);

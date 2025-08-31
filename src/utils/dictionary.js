@@ -3,6 +3,8 @@
 // fetching part-of-speech information and predictive suggestions.
 
 // Fetch the part of speech for a word. Returns 'unknown' if not found.
+import { filterChildFriendly } from './filterSuggestions.js';
+
 export const fetchWordClass = async (word) => {
   if (!word) return 'unknown';
   try {
@@ -40,7 +42,7 @@ export const fetchSuggestions = async (fragment) => {
     );
     if (!response.ok) return [];
     const data = await response.json();
-    return data.map((item) => item.word);
+    return filterChildFriendly(data.map((item) => item.word));
   } catch {
     return [];
   }
