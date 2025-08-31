@@ -25,6 +25,7 @@ import WordEditor from './WordEditor';
 import { parseCSV } from './parseCSV';
 import WordDot from './WordDot';
 import SentenceDot from './SentenceDot';
+import { fetchWordClass, fetchSuggestions } from '../utils/dictionary';
 
 // Import TTS functions and configurations
 import { speakText, initializeVoices } from './tts';
@@ -73,6 +74,7 @@ const SentenceBuilder = () => {
   });
   const [customWord, setCustomWord] = useState('');
   const [customWordType, setCustomWordType] = useState('unknown');
+  const [customSuggestions, setCustomSuggestions] = useState([]);
   const [filter, setFilter] = useState('all'); // 'all' or specific word type
 
   // **New State Variable for wordie.csv**
@@ -262,8 +264,31 @@ const SentenceBuilder = () => {
   };
 
   // Whenever `customWord` changes, figure out the best guess for its type
+  // and retrieve predictive suggestions from an online dictionary. A
+  // debounce ensures we don't query on every keypress.
   useEffect(() => {
-    setCustomWordType(checkWordInVocabDB(customWord));
+    if (!customWord) {
+      setCustomWordType('unknown');
+      setCustomSuggestions([]);
+      return;
+    }
+
+    const handler = setTimeout(async () => {
+      // First check local vocab databases
+      let type = checkWordInVocabDB(customWord);
+
+      // If not found locally, query the Datamuse API for part of speech
+      if (type === 'unknown') {
+        type = await fetchWordClass(customWord);
+      }
+      setCustomWordType(type);
+
+      // Fetch predictive suggestions (including spelling corrections)
+      const suggestions = await fetchSuggestions(customWord);
+      setCustomSuggestions(suggestions);
+    }, 1000); // 1 second debounce
+
+    return () => clearTimeout(handler);
   }, [customWord, wordieDB, vocabularyDB]);
 
   /**
@@ -839,6 +864,19 @@ const SentenceBuilder = () => {
                     }
                     className="block w-full border-2 border-gray-300 rounded-md p-2 text-base sm:text-lg outline-none focus:ring-2 focus:ring-blue-200"
                   />
+                  {customSuggestions.length > 0 && (
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      {customSuggestions.map((sug) => (
+                        <button
+                          key={sug}
+                          onClick={() => setCustomWord(sug)}
+                          className="px-2 py-1 bg-gray-200 rounded hover:bg-gray-300 text-sm"
+                        >
+                          {sug}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <div className="flex items-center gap-2 mt-2">
                     {/* Preview of the typed word with coloring */}
                     <span
