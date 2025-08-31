@@ -1,10 +1,11 @@
 // src/SentenceBuilder.jsx
 
-import { useState, useCallback, useEffect, Fragment } from 'react';
+import { useState, useCallback, useEffect, Fragment, useMemo } from 'react';
 import { Save, Eye, Volume2, VolumeX, X, Palette } from 'lucide-react';
 
 import { themes } from './themes';
 import { csvToVocabCategory, wordClassColours } from './mappings';
+import WordMat from './WordMat';
 import IconButton from './IconButton';
 import ResizableDraggableModal from './ResizableDraggableModal'; // Ensure correct import path
 import WordContextMenu from './WordContextMenu';
@@ -77,6 +78,17 @@ const SentenceBuilder = () => {
   });
 
   const [typingPosition, setTypingPosition] = useState(null);
+  const [showWordMat, setShowWordMat] = useState(false);
+
+  const mergedVocabulary = useMemo(() => {
+    const combined = {};
+    Object.keys(vocabularyDB).forEach((key) => {
+      combined[key] = Array.from(
+        new Set([...(vocabularyDB[key] || []), ...(wordieDB[key] || [])])
+      );
+    });
+    return combined;
+  }, [vocabularyDB, wordieDB]);
 
   const theme = themes[currentTheme];
 
@@ -705,21 +717,36 @@ const SentenceBuilder = () => {
           {/*
             SAVE BUTTON
           */}
-          {sentences.length > 0 && (
-            <div className="flex justify-center">
-              <button
-                onClick={saveSentencesAsTextFile}
-                className={`flex items-center gap-2 sm:gap-4 px-6 sm:px-12 py-4 sm:py-6 ${theme.button} text-white rounded-xl font-semibold transition-all duration-300 hover:scale-105 focus:outline-none focus:ring-4 focus:ring-green-300 text-base sm:text-lg md:text-2xl`}
-              >
-                <Save size={24} className="sm:hidden" />
-                <Save size={32} className="hidden sm:inline" />
-                <span className="hidden sm:inline">Save My Story</span>
-              </button>
-            </div>
-          )}
-        </main>
+        {sentences.length > 0 && (
+          <div className="flex justify-center">
+            <button
+              onClick={saveSentencesAsTextFile}
+              className={`flex items-center gap-2 sm:gap-4 px-6 sm:px-12 py-4 sm:py-6 ${theme.button} text-white rounded-xl font-semibold transition-all duration-300 hover:scale-105 focus:outline-none focus:ring-4 focus:ring-green-300 text-base sm:text-lg md:text-2xl`}
+            >
+              <Save size={24} className="sm:hidden" />
+              <Save size={32} className="hidden sm:inline" />
+              <span className="hidden sm:inline">Save My Story</span>
+            </button>
+          </div>
+        )}
+      </main>
 
-        {/* Inline word input is rendered directly in the sentence; modal removed */}
+      <IconButton
+        icon={Palette}
+        label={showWordMat ? 'Hide word mat' : 'Show word mat'}
+        onClick={() => setShowWordMat(!showWordMat)}
+        className="fixed bottom-4 right-4 bg-blue-500 hover:bg-blue-600"
+        size={24}
+      />
+
+      <WordMat
+        open={showWordMat}
+        onClose={() => setShowWordMat(false)}
+        vocabulary={mergedVocabulary}
+        onWordClick={(word) => insertWord(word)}
+      />
+
+      {/* Inline word input is rendered directly in the sentence; modal removed */}
 
         {/**
          * =====================================
