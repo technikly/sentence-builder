@@ -1,7 +1,7 @@
 // src/EditableWord.jsx
 
 import { useState, useEffect, useRef } from 'react';
-import { getSuggestions } from './spellChecker';
+import { getSuggestions } from '../spellChecker';
 import { wordClassColours } from './mappings';
 import PropTypes from 'prop-types';
 
