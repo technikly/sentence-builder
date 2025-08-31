@@ -1,11 +1,11 @@
-import SentenceBuilder from './components/SentenceBuilder';
+import TypingBuilder from './components/TypingBuilder';
 import './App.css';
 
 function App() {
   return (
     <div className="min-h-screen bg-white">
       <main className="h-screen">
-        <SentenceBuilder />
+        <TypingBuilder />
       </main>
     </div>
   );
