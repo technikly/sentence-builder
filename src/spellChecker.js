@@ -2,6 +2,7 @@
 
 import nspell from 'nspell';
 import dictionary from 'dictionary-en';
+import { filterChildFriendly } from './utils/filterSuggestions.js';
 
 let spell;
 
@@ -25,5 +26,6 @@ export const checkSpelling = (word) => {
 
 export const getSuggestions = (word) => {
   if (!spell) return [];
-  return spell.suggest(word);
+  const suggestions = spell.suggest(word);
+  return filterChildFriendly(suggestions);
 };
