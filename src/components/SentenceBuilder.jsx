@@ -17,6 +17,7 @@ import SentenceDot from './SentenceDot';
 import InlineWordInput from './InlineWordInput';
 import { fetchWordClass } from '../utils/dictionary';
 import { initializeSpellChecker, checkSpelling, getSuggestions } from '../spellChecker';
+import { getNanoFeedback, parseNanoFeedback } from '../utils/gptNano';
 
 // Import TTS functions and configurations
 import { speakText } from './tts';
@@ -46,6 +47,7 @@ const SentenceBuilder = () => {
     wordIndex: null,
     suggestions: []
   });
+  const [nanoFeedback, setNanoFeedback] = useState([]);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [vocabularyDB, setVocabularyDB] = useState({
     determiners: ['the', 'a', 'that', 'this'],
@@ -285,6 +287,21 @@ const SentenceBuilder = () => {
     [vocabularyDB, wordieDB]
   );
 
+  const updateNanoFeedback = useCallback(
+    async (currentSentences, sentenceIndex) => {
+      const words = currentSentences[sentenceIndex].words.map((w) => w.word);
+      const context = words.slice(-20).join(' ');
+      if (!context) {
+        setNanoFeedback([]);
+        return;
+      }
+      const raw = await getNanoFeedback(context);
+      const parsed = parseNanoFeedback(raw);
+      setNanoFeedback(parsed);
+    },
+    [setNanoFeedback]
+  );
+
 
   /**
    * ---------------------------
@@ -313,6 +330,7 @@ const SentenceBuilder = () => {
     setSentences(newSentences);
     setTypingPosition({ sentenceIndex, wordIndex: wordIndex + 1 });
     playSound('select');
+    await updateNanoFeedback(newSentences, sentenceIndex);
   };
 
   /**
@@ -745,6 +763,14 @@ const SentenceBuilder = () => {
         vocabulary={mergedVocabulary}
         onWordClick={(word) => insertWord(word)}
       />
+
+      {nanoFeedback.length > 0 && (
+        <div className="fixed bottom-4 left-4 bg-white border border-gray-300 rounded-lg p-4 shadow-lg text-sm max-w-xs">
+          {nanoFeedback.map((line, idx) => (
+            <div key={idx}>{line}</div>
+          ))}
+        </div>
+      )}
 
       {/* Inline word input is rendered directly in the sentence; modal removed */}
 
