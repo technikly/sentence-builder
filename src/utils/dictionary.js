@@ -79,3 +79,18 @@ export const fetchSuggestions = async (fragment) => {
     return [];
   }
 };
+
+// Fetch words that commonly follow the given word.
+export const fetchNextWords = async (word) => {
+  if (!word) return [];
+  try {
+    const response = await fetch(
+      `https://api.datamuse.com/words?lc=${encodeURIComponent(word)}&max=10`
+    );
+    if (!response.ok) return [];
+    const data = await response.json();
+    return filterChildFriendly(data.map((item) => item.word));
+  } catch {
+    return [];
+  }
+};
