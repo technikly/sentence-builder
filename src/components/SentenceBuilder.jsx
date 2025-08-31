@@ -1,6 +1,6 @@
 // src/SentenceBuilder.jsx
 
-import React, { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, Fragment } from 'react';
 import {
   Save,
   RefreshCw,
@@ -27,7 +27,7 @@ import WordDot from './WordDot';
 import SentenceDot from './SentenceDot';
 
 // Import TTS functions and configurations
-import { speakText, initializeVoices, ttsConfig } from './tts';
+import { speakText, initializeVoices } from './tts';
 
 const SentenceBuilder = () => {
   /**
@@ -559,8 +559,8 @@ const SentenceBuilder = () => {
                   {/*
                     Map each word in the sentence
                   */}
-                  {(sentence.words || []).map((wordObj, wordIndex) => (
-                    <React.Fragment key={wordIndex}>
+                    {(sentence.words || []).map((wordObj, wordIndex) => (
+                      <Fragment key={wordIndex}>
                       <div className="flex items-center gap-2 relative">
                         <span
                           onClick={(e) => handleWordRightClick(e, sentenceIndex, wordIndex)}
@@ -573,8 +573,8 @@ const SentenceBuilder = () => {
                         {/* CONTEXT MENU */}
                         {contextMenu.visible &&
                           contextMenu.sentenceIndex === sentenceIndex &&
-                          contextMenu.wordIndex === wordIndex && (
-                            <WordContextMenu
+                            contextMenu.wordIndex === wordIndex && (
+                              <WordContextMenu
                               onCapitalize={() => {
                                 toggleCase(sentenceIndex, wordIndex);
                                 setContextMenu({ ...contextMenu, visible: false });
@@ -622,7 +622,7 @@ const SentenceBuilder = () => {
                         }}
                         theme={theme}
                       />
-                    </React.Fragment>
+                      </Fragment>
                   ))}
 
                   {/*
@@ -717,8 +717,8 @@ const SentenceBuilder = () => {
                   Current Sentence:
                 </h3>
                 <div className="flex flex-wrap gap-2 items-center">
-                  {sentences[activeSentenceIndex].words.map((wordObj, idx) => (
-                    <React.Fragment key={idx}>
+                    {sentences[activeSentenceIndex].words.map((wordObj, idx) => (
+                      <Fragment key={idx}>
                       {idx === activeIndex && (
                         hoveredWordIndex ? (
                           <button
@@ -746,7 +746,7 @@ const SentenceBuilder = () => {
                         {wordObj.word}
                         {wordObj.punctuation}
                       </span>
-                    </React.Fragment>
+                      </Fragment>
                   ))}
 
                   {/*

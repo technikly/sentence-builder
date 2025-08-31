@@ -1,6 +1,6 @@
 // IconButton.jsx
 
-import React from 'react';
+import PropTypes from 'prop-types';
 
 const IconButton = ({ icon: Icon, label, onClick, className = '', size = 32 }) => (
   <button
@@ -14,3 +14,11 @@ const IconButton = ({ icon: Icon, label, onClick, className = '', size = 32 }) =
 );
 
 export default IconButton;
+
+IconButton.propTypes = {
+  icon: PropTypes.elementType.isRequired,
+  label: PropTypes.string.isRequired,
+  onClick: PropTypes.func.isRequired,
+  className: PropTypes.string,
+  size: PropTypes.number
+};

@@ -1,9 +1,9 @@
 // src/components/Suggestions.jsx
 
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { wordClassBackgroundColours } from './mappings';
 import { Lightbulb } from 'lucide-react';
-import IconButton from './IconButton';
+import PropTypes from 'prop-types';
 
 const Suggestions = ({
   sentences,
@@ -11,8 +11,7 @@ const Suggestions = ({
   activeIndex,
   handleWordSelect,
   vocabularyDB,
-  wordieDB,
-  theme
+  wordieDB
 }) => {
   const [suggestedWord, setSuggestedWord] = useState(null);
 
@@ -100,4 +99,13 @@ const Suggestions = ({
 };
 
 export default Suggestions;
+
+Suggestions.propTypes = {
+  sentences: PropTypes.array.isRequired,
+  activeSentenceIndex: PropTypes.number,
+  activeIndex: PropTypes.number,
+  handleWordSelect: PropTypes.func.isRequired,
+  vocabularyDB: PropTypes.object.isRequired,
+  wordieDB: PropTypes.object.isRequired
+};
 

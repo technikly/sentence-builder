@@ -1,7 +1,7 @@
 // SentenceDot.jsx
 
-import React from 'react';
 import { Plus } from 'lucide-react';
+import PropTypes from 'prop-types';
 
 const SentenceDot = ({ onClick, theme }) => (
   <button
@@ -15,3 +15,10 @@ const SentenceDot = ({ onClick, theme }) => (
 );
 
 export default SentenceDot;
+
+SentenceDot.propTypes = {
+  onClick: PropTypes.func.isRequired,
+  theme: PropTypes.shape({
+    sentenceDot: PropTypes.string.isRequired
+  }).isRequired
+};

@@ -1,9 +1,9 @@
 // Modal.jsx
 
-import React from 'react';
 import ReactDOM from 'react-dom';
 import { X } from 'lucide-react';
 import IconButton from './IconButton';
+import PropTypes from 'prop-types';
 
 const Modal = ({ title, onClose, children, theme }) => {
   return ReactDOM.createPortal(
@@ -39,3 +39,15 @@ const Modal = ({ title, onClose, children, theme }) => {
 };
 
 export default Modal;
+
+Modal.propTypes = {
+  title: PropTypes.string.isRequired,
+  onClose: PropTypes.func.isRequired,
+  children: PropTypes.node.isRequired,
+  theme: PropTypes.shape({
+    modal: PropTypes.string.isRequired,
+    card: PropTypes.string.isRequired,
+    primary: PropTypes.string.isRequired,
+    button: PropTypes.string.isRequired
+  }).isRequired
+};

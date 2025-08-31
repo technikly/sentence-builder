@@ -1,18 +1,16 @@
 // src/EditableWord.jsx
 
-import React, { useState, useEffect, useRef } from 'react';
-import { checkSpelling, getSuggestions } from './spellChecker';
-import { X, RefreshCw } from 'lucide-react';
-import IconButton from './IconButton';
+import { useState, useEffect, useRef } from 'react';
+import { getSuggestions } from './spellChecker';
+import { wordClassColours } from './mappings';
+import PropTypes from 'prop-types';
 
 const EditableWord = ({
   wordObj,
   sentenceIndex,
   wordIndex,
   updateWord,
-  theme,
-  misspelled,
-  suggestionsList
+  misspelled
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [currentWord, setCurrentWord] = useState(wordObj.word);
@@ -101,4 +99,16 @@ const EditableWord = ({
 };
 
 export default EditableWord;
+
+EditableWord.propTypes = {
+  wordObj: PropTypes.shape({
+    word: PropTypes.string.isRequired,
+    punctuation: PropTypes.string,
+    type: PropTypes.string
+  }).isRequired,
+  sentenceIndex: PropTypes.number.isRequired,
+  wordIndex: PropTypes.number.isRequired,
+  updateWord: PropTypes.func.isRequired,
+  misspelled: PropTypes.bool
+};
 

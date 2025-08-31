@@ -1,6 +1,6 @@
 // ResizableDraggableModal.jsx
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Rnd } from 'react-rnd';
 import { X, Maximize, Minimize } from 'lucide-react';
 import PropTypes from 'prop-types';
