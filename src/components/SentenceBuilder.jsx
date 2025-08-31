@@ -4,11 +4,7 @@ import { useState, useCallback, useEffect, Fragment } from 'react';
 import { Save, Eye, Volume2, VolumeX, X, Palette } from 'lucide-react';
 
 import { themes } from './themes';
-import {
-  csvToVocabCategory,
-  wordClassColours,
-  wordClassBackgroundColours
-} from './mappings';
+import { csvToVocabCategory, wordClassColours } from './mappings';
 import IconButton from './IconButton';
 import ResizableDraggableModal from './ResizableDraggableModal'; // Ensure correct import path
 import WordContextMenu from './WordContextMenu';
@@ -17,7 +13,8 @@ import WordEditor from './WordEditor';
 import { parseCSV } from './parseCSV';
 import WordDot from './WordDot';
 import SentenceDot from './SentenceDot';
-import { fetchWordClass, fetchSuggestions } from '../utils/dictionary';
+import InlineWordInput from './InlineWordInput';
+import { fetchWordClass } from '../utils/dictionary';
 import { initializeSpellChecker, checkSpelling, getSuggestions } from '../spellChecker';
 
 // Import TTS functions and configurations
@@ -32,8 +29,6 @@ const SentenceBuilder = () => {
 
   // Existing state variables
   const [sentences, setSentences] = useState([]);
-  const [activeIndex, setActiveIndex] = useState(null);
-  const [activeSentenceIndex, setActiveSentenceIndex] = useState(null);
   const [currentTheme, setCurrentTheme] = useState('ocean');
   const [showPreview, setShowPreview] = useState(false);
   const [showWordEditor, setShowWordEditor] = useState(false);
@@ -45,7 +40,6 @@ const SentenceBuilder = () => {
     sentenceIndex: null,
     wordIndex: null
   });
-  const [hoveredWordIndex, setHoveredWordIndex] = useState(null);
   const [spellingSuggestions, setSpellingSuggestions] = useState({
     sentenceIndex: null,
     wordIndex: null,
@@ -70,10 +64,6 @@ const SentenceBuilder = () => {
     prepositions: ['with', 'under', 'behind', 'near', 'beside', 'between', 'above', 'around'],
     conjunctions: ['and', 'but', 'or', 'so', 'yet', 'for', 'nor', 'although']
   });
-  const [customWord, setCustomWord] = useState('');
-  const [customWordType, setCustomWordType] = useState('unknown');
-  const [customSuggestions, setCustomSuggestions] = useState([]);
-  const [filter, setFilter] = useState('all'); // 'all' or specific word type
 
   // **New State Variable for wordie.csv**
   const [wordieDB, setWordieDB] = useState({
@@ -85,6 +75,8 @@ const SentenceBuilder = () => {
     prepositions: [],
     conjunctions: []
   });
+
+  const [typingPosition, setTypingPosition] = useState(null);
 
   const theme = themes[currentTheme];
 
@@ -281,96 +273,34 @@ const SentenceBuilder = () => {
     [vocabularyDB, wordieDB]
   );
 
-  // Whenever `customWord` changes, figure out the best guess for its type
-  // and retrieve predictive suggestions from an online dictionary. A
-  // debounce ensures we don't query on every keypress.
-  useEffect(() => {
-    if (!customWord) {
-      setCustomWordType('unknown');
-      setCustomSuggestions([]);
-      return;
-    }
-
-    const handler = setTimeout(async () => {
-      // First check local vocab databases
-      let type = checkWordInVocabDB(customWord);
-
-      // Build the sentence context with the custom word included
-      let contextSentence = customWord;
-      if (
-        activeSentenceIndex !== null &&
-        sentences[activeSentenceIndex]
-      ) {
-        const words = sentences[activeSentenceIndex].words.map((w) => w.word);
-        const insertPos =
-          activeIndex !== null ? activeIndex : words.length;
-        words.splice(insertPos, 0, customWord);
-        contextSentence = words.join(' ');
-      }
-
-      // If not found locally, try to determine the part of speech using context
-      if (type === 'unknown') {
-        type = await fetchWordClass(customWord, contextSentence);
-      }
-      setCustomWordType(type);
-
-      // Fetch predictive suggestions (including spelling corrections)
-      const suggestions = await fetchSuggestions(customWord);
-      setCustomSuggestions(suggestions);
-    }, 1000); // 1 second debounce
-
-    return () => clearTimeout(handler);
-  }, [
-    customWord,
-    wordieDB,
-    vocabularyDB,
-    activeSentenceIndex,
-    activeIndex,
-    sentences,
-    checkWordInVocabDB
-  ]);
-
-  /**
-   * ---------------------------
-   * Update Hovered Word Index When Custom Word Changes
-   * ---------------------------
-   */
-  useEffect(() => {
-    if (hoveredWordIndex?.isCustom) {
-      setHoveredWordIndex((prev) => ({
-        ...prev,
-        word: customWord,
-        type: customWordType === 'unknown' ? 'unknown' : customWordType,
-      }));
-    }
-  }, [customWord, customWordType, hoveredWordIndex]);
 
   /**
    * ---------------------------
    * Word Selection & Insertion
    * ---------------------------
    */
-  const handleWordSelect = (word, type) => {
-    if (activeIndex === null || activeSentenceIndex === null) return;
+  const startTyping = (sentenceIndex, wordIndex) => {
     playSound('select');
+    setTypingPosition({ sentenceIndex, wordIndex });
+  };
 
-    const newSentences = [...sentences];
-    const currentSentence = newSentences[activeSentenceIndex];
-    const newWord = { word, type, punctuation: '' };
+  const insertWord = async (word) => {
+    if (!typingPosition) return;
+    const { sentenceIndex, wordIndex } = typingPosition;
 
-    // Insert the new word at the chosen index
-    if (activeIndex === currentSentence.words?.length) {
-      currentSentence.words.push(newWord);
-    } else {
-      currentSentence.words.splice(activeIndex, 0, newWord);
+    let type = checkWordInVocabDB(word);
+    if (type === 'unknown') {
+      const contextWords = sentences[sentenceIndex].words.map((w) => w.word);
+      contextWords.splice(wordIndex, 0, word);
+      type = await fetchWordClass(word, contextWords.join(' '));
     }
 
+    const newSentences = [...sentences];
+    const newWord = { word, type, punctuation: '' };
+    newSentences[sentenceIndex].words.splice(wordIndex, 0, newWord);
     setSentences(newSentences);
-    setActiveIndex(null);
-    setActiveSentenceIndex(null);
-    // Reset the custom input box if used
-    setCustomWord('');
-    setCustomWordType('unknown');
+    setTypingPosition({ sentenceIndex, wordIndex: wordIndex + 1 });
+    playSound('select');
   };
 
   /**
@@ -586,14 +516,21 @@ const SentenceBuilder = () => {
                   {/*
                     Leading WordDot to insert a word at the start (index 0)
                   */}
-                  <WordDot
-                    onClick={() => {
-                      setActiveIndex(0);
-                      setActiveSentenceIndex(sentenceIndex);
-                      playSound('select');
-                    }}
-                    theme={theme}
-                  />
+                  {typingPosition &&
+                  typingPosition.sentenceIndex === sentenceIndex &&
+                  typingPosition.wordIndex === 0 ? (
+                    <InlineWordInput
+                      onSubmit={insertWord}
+                      onCancel={() => setTypingPosition(null)}
+                      theme={theme}
+                      previousWord={null}
+                    />
+                  ) : (
+                    <WordDot
+                      onClick={() => startTyping(sentenceIndex, 0)}
+                      theme={theme}
+                    />
+                  )}
 
                   {/*
                     Map each word in the sentence
@@ -708,14 +645,21 @@ const SentenceBuilder = () => {
                           </div>
 
                           {/* WordDot after each word for inserting a new word */}
-                          <WordDot
-                            onClick={() => {
-                              setActiveIndex(wordIndex + 1);
-                              setActiveSentenceIndex(sentenceIndex);
-                              playSound('select');
-                            }}
-                            theme={theme}
-                          />
+                          {typingPosition &&
+                          typingPosition.sentenceIndex === sentenceIndex &&
+                          typingPosition.wordIndex === wordIndex + 1 ? (
+                            <InlineWordInput
+                              onSubmit={insertWord}
+                              onCancel={() => setTypingPosition(null)}
+                              theme={theme}
+                              previousWord={wordObj.word}
+                            />
+                          ) : (
+                            <WordDot
+                              onClick={() => startTyping(sentenceIndex, wordIndex + 1)}
+                              theme={theme}
+                            />
+                          )}
                         </Fragment>
                       );
                     })}
@@ -775,261 +719,7 @@ const SentenceBuilder = () => {
           )}
         </main>
 
-        {/**
-         * =====================================
-         * ========== ADD WORD MODAL ===========
-         * =====================================
-         */}
-        {activeIndex !== null && activeSentenceIndex !== null && (
-          <div className="fixed bottom-0 left-0 w-full bg-white border-t border-gray-300 p-4 z-50 shadow-lg">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className={`font-semibold ${theme.primary}`}>Choose a Word to Insert</h2>
-              <button
-                onClick={() => {
-                  setActiveIndex(null);
-                  setActiveSentenceIndex(null);
-                  setHoveredWordIndex(null);
-                  setCustomWord('');
-                  setCustomWordType('unknown');
-                }}
-                aria-label="Close"
-              >
-                <X size={24} />
-              </button>
-            </div>
-            <div className="flex flex-col lg:flex-row gap-4 lg:gap-8">
-              {/*
-                PREVIEW of CURRENT SENTENCE
-              */}
-              <div className="flex-1 bg-gray-50 p-6 rounded-lg shadow-lg">
-                <h3
-                  className={`font-semibold mb-4 ${theme.secondary} text-base sm:text-lg md:text-xl`}
-                >
-                  Current Sentence:
-                </h3>
-                <div className="flex flex-wrap gap-2 items-center">
-                    {sentences[activeSentenceIndex].words.map((wordObj, idx) => (
-                      <Fragment key={idx}>
-                      {idx === activeIndex && (
-                        hoveredWordIndex ? (
-                          <button
-                            onClick={() =>
-                              handleWordSelect(
-                                hoveredWordIndex.word,
-                                hoveredWordIndex.type === 'unknown'
-                                  ? 'unknown'
-                                  : hoveredWordIndex.type
-                              )
-                            }
-                            className={`font-semibold transition-transform duration-300 text-xl sm:text-2xl md:text-3xl lg:text-4xl ${wordClassColours[hoveredWordIndex.type]}`}
-                          >
-                            {hoveredWordIndex.word}
-                          </button>
-                        ) : (
-                          <span className="w-4 h-4 bg-red-500 rounded-full animate-pulse" />
-                        )
-                      )}
-
-                      {/* Existing word (bigger font for preview as well) */}
-                      <span
-                        className={`font-semibold transition-transform duration-300 text-xl sm:text-2xl md:text-3xl lg:text-4xl ${wordClassColours[wordObj.type]}`}
-                      >
-                        {wordObj.word}
-                        {wordObj.punctuation}
-                      </span>
-                      </Fragment>
-                  ))}
-
-                  {/*
-                    If activeIndex is at the end, show preview/dot after the last word
-                  */}
-                  {activeIndex === sentences[activeSentenceIndex].words.length && (
-                    hoveredWordIndex ? (
-                      <button
-                        onClick={() =>
-                          handleWordSelect(
-                            hoveredWordIndex.word,
-                            hoveredWordIndex.type === 'unknown'
-                              ? 'unknown'
-                              : hoveredWordIndex.type
-                          )
-                        }
-                        className={`font-semibold transition-transform duration-300 text-xl sm:text-2xl md:text-3xl lg:text-4xl ${wordClassColours[hoveredWordIndex.type]}`}
-                      >
-                        {hoveredWordIndex.word}
-                      </button>
-                    ) : (
-                      <span className="w-4 h-4 bg-red-500 rounded-full animate-pulse" />
-                    )
-                  )}
-                </div>
-              </div>
-
-              {/* 
-                WORD BANK & CUSTOM INPUT
-              */}
-              <div className="flex-1 bg-white p-6 rounded-lg shadow-lg overflow-y-auto max-h-[70vh]">
-                <h3
-                  className={`font-semibold mb-4 ${theme.secondary} text-base sm:text-lg md:text-xl`}
-                >
-                  Word Bank:
-                </h3>
-
-                {/**
-                 * --- 1) FILTER BUTTONS ---
-                 */}
-                <div className="mb-6">
-                  <span className={`block mb-2 font-medium ${theme.primary} text-base sm:text-lg`}>
-                    Filter by Type:
-                  </span>
-                  <div className="flex flex-wrap gap-2">
-                    {/* 'All' Filter */}
-                    <button
-                      onClick={() => setFilter('all')}
-                      className={`px-3 py-1 rounded-full ${
-                        filter === 'all'
-                          ? `${wordClassBackgroundColours['determiner']} font-bold`
-                          : 'bg-gray-300 hover:bg-gray-400'
-                      } text-white text-sm sm:text-base`}
-                    >
-                      All
-                    </button>
-                    {/* Dynamic Filters based on vocabularyDB */}
-                    {Object.keys(vocabularyDB).map((category) => (
-                      <button
-                        key={category}
-                        onClick={() => setFilter(category.slice(0, -1))} // e.g., 'determiners' to 'determiner'
-                        className={`px-3 py-1 rounded-full ${
-                          filter === category.slice(0, -1)
-                            ? `${wordClassBackgroundColours[category.slice(0, -1)]} font-bold`
-                            : 'bg-gray-300 hover:bg-gray-400'
-                        } text-white text-sm sm:text-base`}
-                      >
-                        {category.charAt(0).toUpperCase() + category.slice(1, -1)}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/** 
-                 * --- 2) CUSTOM TYPED WORD BOX ---
-                 */}
-                <div className="mb-6">
-                  <label
-                    className={`block mb-2 font-medium ${theme.primary} text-base sm:text-lg`}
-                    htmlFor="customWord"
-                  >
-                    Type your own word:
-                  </label>
-                  <input
-                    id="customWord"
-                    type="text"
-                    value={customWord}
-                    onChange={(e) =>
-                      setCustomWord(e.target.value.replace(/[^A-Za-z'"]/g, ''))
-                    }
-                    className="block w-full border-2 border-gray-300 rounded-md p-2 text-base sm:text-lg outline-none focus:ring-2 focus:ring-blue-200"
-                  />
-                  {customSuggestions.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mt-2">
-                      {customSuggestions.map((sug) => (
-                        <button
-                          key={sug}
-                          onClick={() => setCustomWord(sug)}
-                          className="px-2 py-1 bg-gray-200 rounded hover:bg-gray-300 text-sm"
-                        >
-                          {sug}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <div className="flex items-center gap-2 mt-2">
-                    {/* Preview of the typed word with coloring */}
-                    <span
-                      className={`inline-block px-4 py-2 rounded-md text-white text-sm sm:text-base ${
-                        customWordType !== 'unknown'
-                          ? wordClassBackgroundColours[customWordType]
-                          : 'bg-black'
-                      } cursor-pointer`}
-                      onMouseEnter={() => {
-                        if (customWord.trim()) {
-                          setHoveredWordIndex({
-                            word: customWord,
-                            type: customWordType === 'unknown' ? 'unknown' : customWordType,
-                            isCustom: true,
-                          });
-                        }
-                      }}
-                      onMouseLeave={() => setHoveredWordIndex(null)}
-                      onClick={() => {
-                        if (customWord.trim()) {
-                          handleWordSelect(
-                            customWord,
-                            customWordType === 'unknown' ? 'unknown' : customWordType
-                          );
-                        }
-                      }}
-                    >
-                      {customWord || '(no word)'}
-                    </span>
-                    {/* Button to insert this typed word */}
-                    <button
-                      onClick={() => {
-                        if (customWord.trim()) {
-                          handleWordSelect(
-                            customWord,
-                            customWordType === 'unknown' ? 'unknown' : customWordType
-                          );
-                        }
-                      }}
-                      className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-md font-semibold text-sm sm:text-base"
-                    >
-                      Add This Word
-                    </button>
-                  </div>
-                </div>
-
-                {/**
-                 * --- 3) EXISTING VOCAB CATEGORIES ---
-                 */}
-                {Object.entries(vocabularyDB).map(([category, words]) => (
-                  // Apply filtering at the category level
-                  (filter === 'all' || category.slice(0, -1) === filter) && (
-                    <div key={category} className="mb-4">
-                      <h4
-                        className={`font-medium ${theme.primary} capitalize text-base sm:text-lg md:text-xl`}
-                      >
-                        {category.replace(/([A-Z])/g, ' $1').trim()}:
-                      </h4>
-                      <div className="flex flex-wrap gap-2 sm:gap-4 mt-2">
-                        {words.map((word) => (
-                          <button
-                            key={word}
-                            onMouseEnter={() =>
-                              setHoveredWordIndex({
-                                word,
-                                type: category.slice(0, -1)
-                              })
-                            }
-                            onMouseLeave={() => setHoveredWordIndex(null)}
-                            onClick={() => {
-                              handleWordSelect(word, category.slice(0, -1));
-                            }}
-                            className={`px-4 sm:px-6 py-2 sm:py-3 ${
-                              wordClassBackgroundColours[category.slice(0, -1)]
-                            } rounded-xl text-white transition-all duration-300 hover:scale-105 text-sm sm:text-base md:text-lg`}
-                          >
-                            {word}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
+        {/* Inline word input is rendered directly in the sentence; modal removed */}
 
         {/**
          * =====================================
