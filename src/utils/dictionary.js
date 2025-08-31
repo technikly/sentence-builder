@@ -2,11 +2,43 @@
 // Utility functions to interact with the Datamuse API for
 // fetching part-of-speech information and predictive suggestions.
 
-// Fetch the part of speech for a word. Returns 'unknown' if not found.
+import nlp from 'compromise';
 import { filterChildFriendly } from './filterSuggestions.js';
 
-export const fetchWordClass = async (word) => {
+// Fetch the part of speech for a word. If a sentence context is provided,
+// attempt to determine the word's type using the surrounding words. Falls back
+// to the Datamuse API when the context is insufficient. Returns 'unknown' if no
+// type can be determined.
+export const fetchWordClass = async (word, sentence = '') => {
   if (!word) return 'unknown';
+
+  if (sentence) {
+    try {
+      const doc = nlp(sentence);
+      const match = doc.match(word).terms().data()[0];
+      const tags = match?.terms?.[0]?.tags || [];
+      if (tags.length) {
+        const tagMap = {
+          Noun: 'noun',
+          Verb: 'verb',
+          Adjective: 'adjective',
+          Adverb: 'adverb',
+          Preposition: 'preposition',
+          Conjunction: 'conjunction',
+          Determiner: 'determiner',
+          Pronoun: 'pronoun'
+        };
+        for (const tag of tags) {
+          if (tagMap[tag]) {
+            return tagMap[tag];
+          }
+        }
+      }
+    } catch {
+      // Ignore errors and fall back to Datamuse
+    }
+  }
+
   try {
     const response = await fetch(
       `https://api.datamuse.com/words?sp=${encodeURIComponent(word)}&md=p&max=1`
