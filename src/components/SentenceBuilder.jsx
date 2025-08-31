@@ -243,25 +243,28 @@ const SentenceBuilder = () => {
    * Helper: Check if a word is in local DB
    * ---------------------------
    */
-  const checkWordInVocabDB = (word) => {
-    if (!word.trim()) return 'unknown';
-    
-    // **Check in vocabularyDB first**
-    for (const [category, words] of Object.entries(vocabularyDB)) {
-      if (words.map((w) => w.toLowerCase()).includes(word.toLowerCase())) {
-        return category.slice(0, -1); // Return singular form
+  const checkWordInVocabDB = useCallback(
+    (word) => {
+      if (!word.trim()) return 'unknown';
+
+      // **Check in vocabularyDB first**
+      for (const [category, words] of Object.entries(vocabularyDB)) {
+        if (words.map((w) => w.toLowerCase()).includes(word.toLowerCase())) {
+          return category.slice(0, -1); // Return singular form
+        }
       }
-    }
-    
-    // **Then check in wordieDB**
-    for (const [category, words] of Object.entries(wordieDB)) {
-      if (words.map((w) => w.toLowerCase()).includes(word.toLowerCase())) {
-        return category.slice(0, -1); // Return singular form
+
+      // **Then check in wordieDB**
+      for (const [category, words] of Object.entries(wordieDB)) {
+        if (words.map((w) => w.toLowerCase()).includes(word.toLowerCase())) {
+          return category.slice(0, -1); // Return singular form
+        }
       }
-    }
-    
-    return 'unknown';
-  };
+
+      return 'unknown';
+    },
+    [vocabularyDB, wordieDB]
+  );
 
   // Whenever `customWord` changes, figure out the best guess for its type
   // and retrieve predictive suggestions from an online dictionary. A
@@ -277,9 +280,22 @@ const SentenceBuilder = () => {
       // First check local vocab databases
       let type = checkWordInVocabDB(customWord);
 
-      // If not found locally, query the Datamuse API for part of speech
+      // Build the sentence context with the custom word included
+      let contextSentence = customWord;
+      if (
+        activeSentenceIndex !== null &&
+        sentences[activeSentenceIndex]
+      ) {
+        const words = sentences[activeSentenceIndex].words.map((w) => w.word);
+        const insertPos =
+          activeIndex !== null ? activeIndex : words.length;
+        words.splice(insertPos, 0, customWord);
+        contextSentence = words.join(' ');
+      }
+
+      // If not found locally, try to determine the part of speech using context
       if (type === 'unknown') {
-        type = await fetchWordClass(customWord);
+        type = await fetchWordClass(customWord, contextSentence);
       }
       setCustomWordType(type);
 
@@ -289,7 +305,15 @@ const SentenceBuilder = () => {
     }, 1000); // 1 second debounce
 
     return () => clearTimeout(handler);
-  }, [customWord, wordieDB, vocabularyDB]);
+  }, [
+    customWord,
+    wordieDB,
+    vocabularyDB,
+    activeSentenceIndex,
+    activeIndex,
+    sentences,
+    checkWordInVocabDB
+  ]);
 
   /**
    * ---------------------------
