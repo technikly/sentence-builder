@@ -26,6 +26,7 @@ import { parseCSV } from './parseCSV';
 import WordDot from './WordDot';
 import SentenceDot from './SentenceDot';
 import { fetchWordClass, fetchSuggestions } from '../utils/dictionary';
+import { initializeSpellChecker, checkSpelling, getSuggestions } from '../spellChecker';
 
 // Import TTS functions and configurations
 import { speakText, initializeVoices } from './tts';
@@ -53,6 +54,11 @@ const SentenceBuilder = () => {
     wordIndex: null
   });
   const [hoveredWordIndex, setHoveredWordIndex] = useState(null);
+  const [spellingSuggestions, setSpellingSuggestions] = useState({
+    sentenceIndex: null,
+    wordIndex: null,
+    suggestions: []
+  });
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [vocabularyDB, setVocabularyDB] = useState({
     determiners: ['the', 'a', 'that', 'this'],
@@ -89,6 +95,19 @@ const SentenceBuilder = () => {
   });
 
   const theme = themes[currentTheme];
+
+  useEffect(() => {
+    initializeSpellChecker().catch((err) =>
+      console.error('Spell checker init failed', err)
+    );
+  }, []);
+
+  useEffect(() => {
+    const handler = () =>
+      setSpellingSuggestions({ sentenceIndex: null, wordIndex: null, suggestions: [] });
+    window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, []);
 
   /**
    * ---------------------------
@@ -236,6 +255,19 @@ const SentenceBuilder = () => {
 
     setSentences(newSentences);
     playSound('change');
+  };
+
+  const openSpellingSuggestions = (sentenceIndex, wordIndex) => {
+    const word = sentences[sentenceIndex].words[wordIndex].word;
+    const suggestions = getSuggestions(word);
+    setSpellingSuggestions({ sentenceIndex, wordIndex, suggestions });
+  };
+
+  const applySpellingSuggestion = (sentenceIndex, wordIndex, suggestion) => {
+    const newSentences = [...sentences];
+    newSentences[sentenceIndex].words[wordIndex].word = suggestion;
+    setSentences(newSentences);
+    setSpellingSuggestions({ sentenceIndex: null, wordIndex: null, suggestions: [] });
   };
 
   /**
@@ -608,71 +640,127 @@ const SentenceBuilder = () => {
                   {/*
                     Map each word in the sentence
                   */}
-                    {(sentence.words || []).map((wordObj, wordIndex) => (
-                      <Fragment key={wordIndex}>
-                      <div className="flex items-center gap-2 relative">
-                        <span
-                          onClick={(e) => handleWordRightClick(e, sentenceIndex, wordIndex)}
-                          className={`font-bold tracking-wide transition-colors duration-500 cursor-pointer hover:opacity-80 text-xl sm:text-2xl md:text-3xl lg:text-4xl ${wordClassColours[wordObj.type]}`}
-                        >
-                          {wordObj.word}
-                          {wordObj.punctuation}
-                        </span>
+                    {(sentence.words || []).map((wordObj, wordIndex) => {
+                      const misspelled = !checkSpelling(wordObj.word);
+                      const suggestionOpen =
+                        spellingSuggestions.sentenceIndex === sentenceIndex &&
+                        spellingSuggestions.wordIndex === wordIndex;
+                      return (
+                        <Fragment key={wordIndex}>
+                          <div className="flex items-center gap-2 relative">
+                            <span className="relative">
+                              <span
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (misspelled) {
+                                    openSpellingSuggestions(sentenceIndex, wordIndex);
+                                  } else {
+                                    setSpellingSuggestions({
+                                      sentenceIndex: null,
+                                      wordIndex: null,
+                                      suggestions: []
+                                    });
+                                    handleWordRightClick(e, sentenceIndex, wordIndex);
+                                  }
+                                }}
+                                onContextMenu={(e) =>
+                                  handleWordRightClick(e, sentenceIndex, wordIndex)
+                                }
+                                className={`font-bold tracking-wide transition-colors duration-500 cursor-pointer hover:opacity-80 text-xl sm:text-2xl md:text-3xl lg:text-4xl ${
+                                  misspelled
+                                    ? 'underline decoration-red-500 decoration-wavy'
+                                    : wordClassColours[wordObj.type]
+                                }`}
+                              >
+                                {wordObj.word}
+                                {wordObj.punctuation}
+                              </span>
+                              {misspelled &&
+                                suggestionOpen &&
+                                spellingSuggestions.suggestions.length > 0 && (
+                                  <div className="absolute left-0 top-full mt-1 w-max bg-white border border-gray-300 rounded-md shadow-lg z-10">
+                                    {spellingSuggestions.suggestions
+                                      .slice(0, 5)
+                                      .map((suggestion, idx) => (
+                                        <div
+                                          key={idx}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            applySpellingSuggestion(
+                                              sentenceIndex,
+                                              wordIndex,
+                                              suggestion
+                                            );
+                                          }}
+                                          className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
+                                        >
+                                          {suggestion}
+                                        </div>
+                                      ))}
+                                  </div>
+                                )}
+                            </span>
 
-                        {/* CONTEXT MENU */}
-                        {contextMenu.visible &&
-                          contextMenu.sentenceIndex === sentenceIndex &&
-                            contextMenu.wordIndex === wordIndex && (
-                              <WordContextMenu
-                              onCapitalize={() => {
-                                toggleCase(sentenceIndex, wordIndex);
-                                setContextMenu({ ...contextMenu, visible: false });
-                              }}
-                              onUncapitalize={() => {
-                                toggleCase(sentenceIndex, wordIndex);
-                                setContextMenu({ ...contextMenu, visible: false });
-                              }}
-                              onAddPunctuation={() => {
-                                openAddPunctuationEditor(sentenceIndex, wordIndex);
-                                setContextMenu({ ...contextMenu, visible: false });
-                              }}
-                              onEditPunctuation={() => {
-                                openEditPunctuationEditor(sentenceIndex, wordIndex);
-                                setContextMenu({ ...contextMenu, visible: false });
-                              }}
-                              onEdit={() => {
-                                setEditingWord({ sentenceIndex, wordIndex, mode: 'edit' });
-                                setShowWordEditor(true);
-                                setContextMenu({ ...contextMenu, visible: false });
-                              }}
-                              onDelete={() => {
-                                deleteWord(sentenceIndex, wordIndex);
-                                setContextMenu({ ...contextMenu, visible: false });
-                              }}
-                              onClose={() =>
-                                setContextMenu({ ...contextMenu, visible: false })
-                              }
-                              position={{ x: contextMenu.x, y: contextMenu.y }}
-                              isCapitalized={
-                                wordObj.word[0] === wordObj.word[0].toUpperCase()
-                              }
-                              hasPunctuation={wordObj.punctuation}
-                              zIndexClass="z-[9999]"
-                            />
-                          )}
-                      </div>
+                            {/* CONTEXT MENU */}
+                            {contextMenu.visible &&
+                              contextMenu.sentenceIndex === sentenceIndex &&
+                              contextMenu.wordIndex === wordIndex && (
+                                <WordContextMenu
+                                  onCapitalize={() => {
+                                    toggleCase(sentenceIndex, wordIndex);
+                                    setContextMenu({ ...contextMenu, visible: false });
+                                  }}
+                                  onUncapitalize={() => {
+                                    toggleCase(sentenceIndex, wordIndex);
+                                    setContextMenu({ ...contextMenu, visible: false });
+                                  }}
+                                  onAddPunctuation={() => {
+                                    openAddPunctuationEditor(sentenceIndex, wordIndex);
+                                    setContextMenu({ ...contextMenu, visible: false });
+                                  }}
+                                  onEditPunctuation={() => {
+                                    openEditPunctuationEditor(sentenceIndex, wordIndex);
+                                    setContextMenu({ ...contextMenu, visible: false });
+                                  }}
+                                  onEdit={() => {
+                                    setEditingWord({
+                                      sentenceIndex,
+                                      wordIndex,
+                                      mode: 'edit'
+                                    });
+                                    setShowWordEditor(true);
+                                    setContextMenu({ ...contextMenu, visible: false });
+                                  }}
+                                  onDelete={() => {
+                                    deleteWord(sentenceIndex, wordIndex);
+                                    setContextMenu({ ...contextMenu, visible: false });
+                                  }}
+                                  onClose={() =>
+                                    setContextMenu({ ...contextMenu, visible: false })
+                                  }
+                                  position={{ x: contextMenu.x, y: contextMenu.y }}
+                                  isCapitalized={
+                                    wordObj.word[0] === wordObj.word[0].toUpperCase()
+                                  }
+                                  hasPunctuation={wordObj.punctuation}
+                                  zIndexClass="z-[9999]"
+                                />
+                              )}
+                          </div>
 
-                      {/* WordDot after each word for inserting a new word */}
-                      <WordDot
-                        onClick={() => {
-                          setActiveIndex(wordIndex + 1);
-                          setActiveSentenceIndex(sentenceIndex);
-                          playSound('select');
-                        }}
-                        theme={theme}
-                      />
-                      </Fragment>
-                  ))}
+                          {/* WordDot after each word for inserting a new word */}
+                          <WordDot
+                            onClick={() => {
+                              setActiveIndex(wordIndex + 1);
+                              setActiveSentenceIndex(sentenceIndex);
+                              playSound('select');
+                            }}
+                            theme={theme}
+                          />
+                        </Fragment>
+                      );
+                    })}
 
                   {/*
                     Controls for this Sentence
@@ -1059,7 +1147,63 @@ const SentenceBuilder = () => {
                   key={index}
                   className={`${theme.secondary} leading-relaxed text-lg sm:text-xl md:text-2xl lg:text-3xl`}
                 >
-                  {sentence.words.map((w) => w.word + w.punctuation).join(' ')}
+                  {sentence.words.map((w, wordIndex) => {
+                    const misspelled = !checkSpelling(w.word);
+                    const suggestionOpen =
+                      spellingSuggestions.sentenceIndex === index &&
+                      spellingSuggestions.wordIndex === wordIndex;
+                    return (
+                      <span key={wordIndex} className="relative mr-1">
+                        <span
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (misspelled) {
+                              openSpellingSuggestions(index, wordIndex);
+                            } else {
+                              setSpellingSuggestions({
+                                sentenceIndex: null,
+                                wordIndex: null,
+                                suggestions: []
+                              });
+                            }
+                          }}
+                          className={
+                            misspelled
+                              ? 'underline decoration-red-500 decoration-wavy cursor-pointer'
+                              : ''
+                          }
+                        >
+                          {w.word}
+                          {w.punctuation}
+                        </span>
+                        {misspelled &&
+                          suggestionOpen &&
+                          spellingSuggestions.suggestions.length > 0 && (
+                            <div className="absolute left-0 top-full mt-1 w-max bg-white border border-gray-300 rounded-md shadow-lg z-10">
+                              {spellingSuggestions.suggestions
+                                .slice(0, 5)
+                                .map((suggestion, idx) => (
+                                  <div
+                                    key={idx}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      applySpellingSuggestion(
+                                        index,
+                                        wordIndex,
+                                        suggestion
+                                      );
+                                    }}
+                                    className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
+                                  >
+                                    {suggestion}
+                                  </div>
+                                ))}
+                            </div>
+                          )}
+                      </span>
+                    );
+                  })}
                 </p>
               ))}
             </div>
