@@ -3,85 +3,26 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, Dot, Save, Volume2 } from 'lucide-react';
 
+// Resolved WordGarden component (merge conflicts removed)
+// - Token-based editing (insert/replace/delete words & punctuation)
+// - Dynamic suggestions & gradients
+// - Speech on click, Save to localStorage
+// - Invisible input captures typing
+
 const DICTIONARY = [
-  'cat',
-  'catch',
-  'caterpillar',
-  'castle',
-  'car',
-  'card',
-  'care',
-  'careful',
-  'dog',
-  'door',
-  'down',
-  'draw',
-  'dream',
-  'drift',
-  'dragon',
-  'drop',
-  'apple',
-  'apricot',
-  'astronaut',
-  'ask',
-  'asleep',
-  'after',
-  'again',
-  'quick',
-  'quiet',
-  'quiver',
-  'queen',
-  'question',
-  'quack',
-  'happy',
-  'happen',
-  'harbor',
-  'harmony',
-  'harvest',
-  'hat',
-  'play',
-  'plane',
-  'planet',
-  'please',
-  'place',
-  'story',
-  'stork',
-  'storm',
-  'store',
-  'stone',
-  'strong',
-  'bright',
-  'bring',
-  'breeze',
-  'bread',
-  'break',
-  'blue',
-  'black',
-  'brown',
-  'brave',
-  'broom',
-  'green',
-  'gold',
-  'glow',
-  'glide',
-  'glitter',
-  'sun',
-  'sand',
-  'song',
-  'sound',
-  'soft',
-  'some',
-  'time',
-  'tiny',
-  'tiger',
-  'tired',
-  'tickle',
-  'magic',
-  'make',
-  'made',
-  'many',
-  'march',
-  'marble'
+  'cat','catch','caterpillar','castle','car','card','care','careful',
+  'dog','door','down','draw','dream','drift','dragon','drop',
+  'apple','apricot','astronaut','ask','asleep','after','again',
+  'quick','quiet','quiver','queen','question','quack',
+  'happy','happen','harbor','harmony','harvest','hat',
+  'play','plane','planet','please','place',
+  'story','stork','storm','store','stone','strong',
+  'bright','bring','breeze','bread','break',
+  'blue','black','brown','brave','broom',
+  'green','gold','glow','glide','glitter',
+  'sun','sand','song','sound','soft','some',
+  'time','tiny','tiger','tired','tickle',
+  'magic','make','made','many','march','marble'
 ];
 
 const PUNCT = ['.', ',', '!', '?', '…', ';', ':'];
@@ -128,10 +69,7 @@ async function predictNext(context, currentWord) {
   let candidates = DICTIONARY.filter((word) => word.startsWith(prefix));
 
   if (prefix.length === 0) {
-    const tokens = context
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
+    const tokens = context.trim().split(/\s+/).filter(Boolean);
     const last = tokens.at(-1) ?? '';
     candidates = last
       ? DICTIONARY.filter((word) => word.startsWith(last[0]))
@@ -147,12 +85,14 @@ function randomGradientStep() {
 }
 
 export default function WordGarden() {
+  // token-based state (words + punctuation as separate tokens)
   const [tokens, setTokens] = useState([]);
   const [current, setCurrent] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [punctuation, setPunctuation] = useState(PUNCT);
   const [bgIndex, setBgIndex] = useState(0);
   const [errorFlag, setErrorFlag] = useState(false);
+  // cursor: where to insert/replace in tokens
   const [cursor, setCursor] = useState({ type: 'insert', index: 0 });
   const [activeToken, setActiveToken] = useState(null);
   const inputRef = useRef(null);
@@ -165,16 +105,13 @@ export default function WordGarden() {
 
   const focusNode = useMemo(() => {
     const trimmedCurrent = current.trim();
-    if (trimmedCurrent) {
-      return trimmedCurrent;
-    }
-    if (activeToken != null && tokens[activeToken]) {
-      return tokens[activeToken];
-    }
+    if (trimmedCurrent) return trimmedCurrent;
+    if (activeToken != null && tokens[activeToken]) return tokens[activeToken];
     const lastToken = tokens.at(-1);
     return lastToken || PLACEHOLDER_ROOT;
   }, [current, activeToken, tokens]);
 
+  // error underline heuristic
   useEffect(() => {
     const prefix = current.trim().toLowerCase();
     if (prefix.length >= 3) {
@@ -185,6 +122,7 @@ export default function WordGarden() {
     }
   }, [current]);
 
+  // predictions
   useEffect(() => {
     let alive = true;
     predictNext(contextBefore, current).then((result) => {
@@ -192,15 +130,15 @@ export default function WordGarden() {
       setSuggestions(result.words);
       setPunctuation(result.punctuation);
     });
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, [contextBefore, current]);
 
+  // focus hidden input
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
+  // keep cursor in-bounds when tokens change
   useEffect(() => {
     setCursor((prev) => {
       const maxIndex = tokens.length;
@@ -208,49 +146,34 @@ export default function WordGarden() {
       if (prev.type === 'replace' && safeIndex >= maxIndex) {
         return { type: 'insert', index: maxIndex };
       }
-      if (safeIndex === (prev.index ?? maxIndex) && prev.type !== 'replace') {
-        return prev;
-      }
-      if (safeIndex === prev.index && prev.type === 'replace') {
-        return prev;
-      }
+      if (safeIndex === (prev.index ?? maxIndex)) return prev;
       return { ...prev, index: safeIndex };
     });
     setActiveToken((prev) => (prev != null && prev >= tokens.length ? null : prev));
   }, [tokens.length]);
 
+  const ranked = suggestions.slice(0, 3);
+
+  // background style
   const backgroundStyle = useMemo(
-    () => ({
-      backgroundImage: GRADIENTS[bgIndex % GRADIENTS.length]
-    }),
+    () => ({ backgroundImage: GRADIENTS[bgIndex % GRADIENTS.length] }),
     [bgIndex]
   );
-
-  const ranked = suggestions.slice(0, 3);
 
   function syncInput(value) {
     if (inputRef.current) {
       inputRef.current.value = value;
       inputRef.current.focus();
-      try {
-        inputRef.current.setSelectionRange(value.length, value.length);
-      } catch {
-        // Ignore selection errors on some browsers
-      }
+      try { inputRef.current.setSelectionRange(value.length, value.length); } catch {}
     }
     setCurrent(value);
   }
 
-  function resetInput() {
-    syncInput('');
-  }
+  function resetInput() { syncInput(''); }
 
   function commitWord(word) {
     const safeWord = word.trim();
-    if (!safeWord) {
-      resetInput();
-      return;
-    }
+    if (!safeWord) { resetInput(); return; }
 
     let nextIndex = 0;
     setTokens((prev) => {
@@ -269,7 +192,7 @@ export default function WordGarden() {
     resetInput();
     setActiveToken(null);
     setCursor({ type: 'insert', index: nextIndex });
-    setBgIndex((index) => (index + randomGradientStep()) % GRADIENTS.length);
+    setBgIndex((i) => (i + randomGradientStep()) % GRADIENTS.length);
   }
 
   function commitPunctuation(mark) {
@@ -290,30 +213,26 @@ export default function WordGarden() {
     resetInput();
     setActiveToken(null);
     setCursor({ type: 'insert', index: nextIndex });
-    setBgIndex((index) => (index + randomGradientStep()) % GRADIENTS.length);
+    setBgIndex((i) => (i + randomGradientStep()) % GRADIENTS.length);
   }
 
   function speak(text) {
-    if (typeof window === 'undefined' || !text) {
-      return;
-    }
+    if (typeof window === 'undefined' || !text) return;
     try {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'en-GB';
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utterance);
-    } catch (error) {
-      console.warn('Speech synthesis failed', error);
+    } catch (e) {
+      console.warn('Speech synthesis failed', e);
     }
   }
 
-  function handleChange(event) {
-    const { value } = event.target;
+  function handleChange(e) {
+    const { value } = e.target;
     if (/\s/.test(value)) {
       const safe = current.trim();
-      if (safe) {
-        commitWord(safe);
-      }
+      if (safe) commitWord(safe);
       resetInput();
       return;
     }
@@ -324,9 +243,7 @@ export default function WordGarden() {
     if (index < 0) return;
     let nextIndex = 0;
     setTokens((prev) => {
-      if (index >= prev.length) {
-        return prev;
-      }
+      if (index >= prev.length) return prev;
       const next = [...prev];
       next.splice(index, 1);
       nextIndex = Math.min(index, next.length);
@@ -334,21 +251,18 @@ export default function WordGarden() {
     });
     setCursor({ type: 'insert', index: nextIndex });
     setActiveToken(null);
-    setBgIndex((indexValue) => (indexValue + randomGradientStep()) % GRADIENTS.length);
+    setBgIndex((i) => (i + randomGradientStep()) % GRADIENTS.length);
   }
 
-  function handleKeyDown(event) {
-    if (event.key === 'Enter') {
-      event.preventDefault();
+  function handleKeyDown(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
       const safe = current.trim();
-      if (safe) {
-        commitWord(safe);
-      }
+      if (safe) commitWord(safe);
       return;
     }
-
-    if (event.key === 'Backspace' && current.length === 0) {
-      event.preventDefault();
+    if (e.key === 'Backspace' && current.length === 0) {
+      e.preventDefault();
       if (cursor.type === 'replace' && cursor.index < tokens.length) {
         removeToken(cursor.index);
         resetInput();
@@ -368,8 +282,8 @@ export default function WordGarden() {
       const existing = JSON.parse(localStorage.getItem('wordgarden:saves') ?? '[]');
       const updated = [payload, ...existing].slice(0, 50);
       localStorage.setItem('wordgarden:saves', JSON.stringify(updated));
-    } catch (error) {
-      console.warn('Unable to save story', error);
+    } catch (err) {
+      console.warn('Unable to save story', err);
     }
   }
 
@@ -377,30 +291,25 @@ export default function WordGarden() {
     setActiveToken(index);
     inputRef.current?.focus();
   }
-
   function beginReplace(index) {
     const token = tokens[index] ?? '';
     setCursor({ type: 'replace', index });
     syncInput(token);
   }
-
   function beginAddBefore(index) {
     setCursor({ type: 'insert', index });
     resetInput();
     inputRef.current?.focus();
   }
-
   function beginAddAfter(index) {
     setCursor({ type: 'insert', index: index + 1 });
     resetInput();
     inputRef.current?.focus();
   }
-
   function deleteTokenAt(index) {
     removeToken(index);
     resetInput();
   }
-
   function continueAtEnd() {
     setActiveToken(null);
     setCursor({ type: 'insert', index: tokens.length });
@@ -423,7 +332,7 @@ export default function WordGarden() {
         transition={{ duration: 0.8, ease: 'easeInOut' }}
         className="absolute inset-0"
         style={{
-          ...backgroundStyle,
+          backgroundImage: GRADIENTS[bgIndex % GRADIENTS.length],
           backgroundSize: '200% 200%',
           filter: 'saturate(1.1)'
         }}
@@ -458,6 +367,7 @@ export default function WordGarden() {
             {showPlaceholder ? (
               <span className="mx-2 rounded-xl bg-white/10 px-3 py-1 text-white/70">{PLACEHOLDER_ROOT}</span>
             ) : null}
+
             {tokens.map((token, index) => {
               const isActive = index === activeToken;
               const isPunctuation = PUNCT.includes(token);
@@ -476,6 +386,7 @@ export default function WordGarden() {
                 </button>
               );
             })}
+
             <span
               className={`inline-flex min-w-[1ch] border-b-2 px-1 ${
                 errorFlag ? 'border-red-400' : 'border-white/80'
@@ -485,6 +396,7 @@ export default function WordGarden() {
             </span>
             <span className="ml-0.5 animate-pulse">|</span>
           </div>
+
           <AnimatePresence>
             {errorFlag ? (
               <motion.div
@@ -651,4 +563,3 @@ SuggestionNode.propTypes = {
   onPick: PropTypes.func.isRequired,
   onSpeak: PropTypes.func.isRequired
 };
-
