@@ -1,6 +1,6 @@
 // src/SentenceBuilder.jsx
 
-import { useState, useCallback, useEffect, Fragment, useMemo } from 'react';
+import { useState, useCallback, useEffect, Fragment, useMemo, useRef } from 'react';
 import { Save, Eye, Volume2, VolumeX, X, Palette } from 'lucide-react';
 
 import { themes } from './themes';
@@ -80,6 +80,7 @@ const SentenceBuilder = () => {
   });
 
   const [typingPosition, setTypingPosition] = useState(null);
+  const suppressNextCancelRef = useRef(false);
   const [showWordMat, setShowWordMat] = useState(false);
 
   const mergedVocabulary = useMemo(() => {
@@ -313,8 +314,16 @@ const SentenceBuilder = () => {
     setTypingPosition({ sentenceIndex, wordIndex });
   };
 
+  const cancelTyping = useCallback(() => {
+    if (suppressNextCancelRef.current) {
+      return;
+    }
+    setTypingPosition(null);
+  }, []);
+
   const insertWord = async (word) => {
     if (!typingPosition) return;
+    suppressNextCancelRef.current = true;
     const { sentenceIndex, wordIndex } = typingPosition;
 
     let type = checkWordInVocabDB(word);
@@ -330,6 +339,9 @@ const SentenceBuilder = () => {
     setSentences(newSentences);
     setTypingPosition({ sentenceIndex, wordIndex: wordIndex + 1 });
     playSound('select');
+    setTimeout(() => {
+      suppressNextCancelRef.current = false;
+    }, 100);
     await updateNanoFeedback(newSentences, sentenceIndex);
   };
 
@@ -549,7 +561,7 @@ const SentenceBuilder = () => {
                   typingPosition.wordIndex === 0 ? (
                     <InlineWordInput
                       onSubmit={insertWord}
-                      onCancel={() => setTypingPosition(null)}
+                      onCancel={cancelTyping}
                       theme={theme}
                       previousWord={null}
                     />
@@ -678,7 +690,7 @@ const SentenceBuilder = () => {
                           typingPosition.wordIndex === wordIndex + 1 ? (
                             <InlineWordInput
                               onSubmit={insertWord}
-                              onCancel={() => setTypingPosition(null)}
+                              onCancel={cancelTyping}
                               theme={theme}
                               previousWord={wordObj.word}
                             />
