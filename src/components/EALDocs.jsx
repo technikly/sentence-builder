@@ -18,20 +18,16 @@ import {
   Underline,
   Upload
 } from 'lucide-react';
+import SpellCheckPanel from './SpellCheckPanel';
+import GrammarCoach from './GrammarCoach';
+import SpeechControls from './SpeechControls';
+import { usePredictiveSuggestions } from '../hooks/usePredictiveSuggestions';
+import { analyseTextAgainstGrammar } from '../utils/grammarAnalysis';
 
 import {
-  determiners,
   filterItemsByLevel,
   flattenWordBank,
-  highFrequencyWords,
   levelRank,
-  linkingVerbs,
-  modalHelpers,
-  pronounFriendlyVerbs,
-  pronouns,
-  questionOpeners,
-  supportiveSentenceFrames,
-  timeMarkers,
   wordBankCategories
 } from '../data/ealWordBank';
 
@@ -90,8 +86,6 @@ SupportLevelBadge.propTypes = {
 
 const getLevelRank = (level) => levelRank[level] ?? 0;
 
-const normaliseText = (text) => text?.toLowerCase().trim() ?? '';
-
 const ensureEditorFocus = (editor) => {
   if (editor && document.activeElement !== editor) {
     editor.focus();
@@ -143,6 +137,11 @@ const EALDocs = () => {
   const uniqueWordList = useMemo(
     () => flattenWordBank(wordBankCategories, supportLevel),
     [supportLevel]
+  );
+
+  const grammarAnalysis = useMemo(
+    () => analyseTextAgainstGrammar(plainText),
+    [plainText]
   );
 
   const updateCaretContext = useCallback(() => {
@@ -219,6 +218,17 @@ const EALDocs = () => {
     [insertTextAtCursor]
   );
 
+  const handleGrammarExampleInsert = useCallback(
+    (example) => {
+      if (!example) {
+        return;
+      }
+      const addition = example.endsWith(' ') ? example : `${example} `;
+      insertTextAtCursor(addition);
+    },
+    [insertTextAtCursor]
+  );
+
   const handleImportClick = useCallback(() => {
     fileInputRef.current?.click();
   }, []);
@@ -271,51 +281,12 @@ const EALDocs = () => {
     URL.revokeObjectURL(url);
   }, [docTitle]);
 
-  const suggestions = useMemo(() => {
-    const results = [];
-    const prefix = normaliseText(caretContext.prefix);
-    const previous = normaliseText(caretContext.previousWord);
-    const textBefore = caretContext.textBeforeCaret.trim();
-
-    if (prefix) {
-      const matches = uniqueWordList.filter((word) => {
-        const lower = normaliseText(word);
-        return lower.startsWith(prefix) && lower !== prefix;
-      });
-      results.push(...matches.slice(0, 5));
-    }
-
-    const isNewSentence = !textBefore || /[.!?]\s*$/.test(textBefore);
-    let contextualPool = [];
-
-    if (isNewSentence) {
-      contextualPool = supportiveSentenceFrames;
-    } else if (pronouns.includes(previous)) {
-      contextualPool = pronounFriendlyVerbs;
-    } else if (determiners.includes(previous)) {
-      contextualPool = categoryLookup.get('descriptions')?.items.map((item) => item.text) ?? [];
-      contextualPool = contextualPool.concat(categoryLookup.get('people')?.items.map((item) => item.text) ?? []);
-    } else if (linkingVerbs.includes(previous)) {
-      contextualPool = categoryLookup.get('descriptions')?.items.map((item) => item.text) ?? [];
-    } else if (questionOpeners.includes(previous)) {
-      contextualPool = categoryLookup.get('people')?.items.map((item) => item.text) ?? [];
-    } else if (timeMarkers.includes(previous)) {
-      contextualPool = categoryLookup.get('actions')?.items.map((item) => item.text) ?? [];
-    } else if (modalHelpers.includes(previous)) {
-      contextualPool = categoryLookup.get('actions')?.items.map((item) => item.text) ?? [];
-    } else {
-      contextualPool = highFrequencyWords;
-    }
-
-    contextualPool.forEach((item) => {
-      const word = typeof item === 'string' ? item : item.text;
-      if (!results.find((existing) => existing.toLowerCase() === word.toLowerCase())) {
-        results.push(word);
-      }
-    });
-
-    return results.slice(0, 6);
-  }, [caretContext, categoryLookup, uniqueWordList]);
+  const { suggestions, insights, isLoading: predictiveLoading } = usePredictiveSuggestions({
+    caretContext,
+    categoryLookup,
+    uniqueWordList,
+    grammarAnalysis
+  });
 
   const handleSuggestionSelect = useCallback(
     (suggestion) => {
@@ -342,6 +313,61 @@ const EALDocs = () => {
     [caretContext.prefix, updateCaretContext]
   );
 
+  const replaceUsingRange = useCallback((target, replacement, options = {}) => {
+    const editor = editorRef.current;
+    if (!editor || !target) {
+      return false;
+    }
+
+    const { contextIndex, includeLeadingSpace = false } = options;
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
+    let globalIndex = 0;
+    const lowerTarget = target.toLowerCase();
+
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const text = node.textContent ?? '';
+      const lower = text.toLowerCase();
+      let searchIndex = lower.indexOf(lowerTarget);
+
+      while (searchIndex !== -1) {
+        const absoluteIndex = globalIndex + searchIndex;
+        const matchesContext =
+          contextIndex == null ||
+          Math.abs(absoluteIndex - contextIndex) <= lowerTarget.length + 1;
+
+        if (matchesContext) {
+          const range = document.createRange();
+          const startIndex =
+            includeLeadingSpace && searchIndex > 0 && text[searchIndex - 1] === ' '
+              ? searchIndex - 1
+              : searchIndex;
+          range.setStart(node, startIndex);
+          range.setEnd(node, searchIndex + target.length);
+
+          const replacementText =
+            replacement == null
+              ? ''
+              : /^[A-Z]/.test(target) && replacement
+              ? replacement[0].toUpperCase() + replacement.slice(1)
+              : replacement;
+
+          range.deleteContents();
+          if (replacementText) {
+            range.insertNode(document.createTextNode(replacementText));
+          }
+          return true;
+        }
+
+        searchIndex = lower.indexOf(lowerTarget, searchIndex + lowerTarget.length);
+      }
+
+      globalIndex += text.length;
+    }
+
+    return false;
+  }, []);
+
   const handleEditorInput = useCallback(
     (event) => {
       const currentText = event.currentTarget.innerText.replace(/\u00a0/g, ' ');
@@ -363,6 +389,45 @@ const EALDocs = () => {
     updateCaretContext();
   }, [updateCaretContext]);
 
+  const fixDoubleSpacing = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null);
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      node.textContent = node.textContent?.replace(/\s{2,}/g, ' ') ?? '';
+    }
+  }, []);
+
+  const handleSpellSuggestion = useCallback(
+    (action) => {
+      const editor = editorRef.current;
+      if (!editor || !action) {
+        return;
+      }
+
+      if (action.type === 'spacing') {
+        fixDoubleSpacing();
+      } else if (action.type === 'spelling') {
+        replaceUsingRange(action.original, action.replacement, {
+          contextIndex: action.contextIndex
+        });
+      } else if (action.type === 'repetition') {
+        replaceUsingRange(action.original, '', {
+          contextIndex: action.contextIndex,
+          includeLeadingSpace: true
+        });
+        fixDoubleSpacing();
+      }
+
+      const syntheticEvent = { currentTarget: editor };
+      handleEditorInput(syntheticEvent);
+    },
+    [fixDoubleSpacing, handleEditorInput, replaceUsingRange]
+  );
+
   useEffect(() => {
     const trimmed = plainText.trim();
     if (!trimmed) {
@@ -370,9 +435,46 @@ const EALDocs = () => {
       return;
     }
 
-    const wordTotal = trimmed.split(/\s+/).length;
+    const wordTotal = trimmed.split(/\s+/).filter(Boolean).length;
     if (wordTotal < 5) {
-      setFocusTip('Can you add a describing word to give more detail?');
+      setFocusTip('Build a longer idea: aim for at least five words to create a full sentence.');
+      return;
+    }
+
+    const priorityOrder = [
+      'capitalLetters',
+      'fullStops',
+      'questionMarks',
+      'conjunctions',
+      'subordinateConjunctions',
+      'nounPhrases',
+      'adjectives',
+      'adverbs',
+      'prepositions',
+      'commasInLists',
+      'apostrophes'
+    ];
+
+    const missingById = new Map(
+      (grammarAnalysis ?? [])
+        .filter((item) => !item.met)
+        .map((item) => [item.id, item])
+    );
+
+    let priorityTarget = null;
+    for (const id of priorityOrder) {
+      if (missingById.has(id)) {
+        priorityTarget = missingById.get(id);
+        break;
+      }
+    }
+
+    if (!priorityTarget) {
+      priorityTarget = (grammarAnalysis ?? []).find((item) => !item.met) ?? null;
+    }
+
+    if (priorityTarget) {
+      setFocusTip(`Focus: ${priorityTarget.tip} (${priorityTarget.stage}).`);
       return;
     }
 
@@ -381,13 +483,14 @@ const EALDocs = () => {
       return;
     }
 
-    if (getLevelRank(supportLevel) >= levelRank.intermediate) {
-      setFocusTip('Try adding a connector like "because" or "after that" to join ideas.');
+    const supportRank = getLevelRank(supportLevel);
+    if (supportRank >= levelRank.intermediate && wordTotal < 20) {
+      setFocusTip('Extend with a second clause using a subordinating conjunction such as because or when.');
       return;
     }
 
-    setFocusTip('Great writing! Could you add how the person feels?');
-  }, [plainText, supportLevel]);
+    setFocusTip('Excellent! Your writing meets the current grammar targets from the curriculum.');
+  }, [plainText, supportLevel, grammarAnalysis]);
 
   const activeCategoryData = categoryLookup.get(activeCategory);
   const activeItems = activeCategoryData?.items ?? [];
@@ -469,17 +572,30 @@ const EALDocs = () => {
 
       <div className="doc-layout">
         <div className="doc-wrapper">
-          <div className="suggestion-bar">
-            <div className="suggestion-bar__header">
-              <Sparkles size={16} />
-              <span>Smart suggestions</span>
-              <SupportLevelBadge level={supportLevel} />
-            </div>
-            <div className="suggestion-bar__chips">
-              {suggestions.length ? (
-                suggestions.map((suggestion) => (
-                  <SuggestionChip
-                    key={`${suggestion}-${supportLevel}`}
+      <div className="suggestion-bar">
+        <div className="suggestion-bar__header">
+          <Sparkles size={16} />
+          <span>Smart suggestions</span>
+          <SupportLevelBadge level={supportLevel} />
+        </div>
+        <div className="suggestion-bar__insights">
+          {predictiveLoading ? (
+            <span className="suggestion-insight">Thinking about the next curriculum-aligned words…</span>
+          ) : insights.length ? (
+            insights.map((insight, index) => (
+              <span key={`${insight}-${index}`} className="suggestion-insight">
+                {insight}
+              </span>
+            ))
+          ) : (
+            <span className="suggestion-insight">Great! Your sentence already uses these grammar targets.</span>
+          )}
+        </div>
+        <div className="suggestion-bar__chips">
+          {suggestions.length ? (
+            suggestions.map((suggestion) => (
+              <SuggestionChip
+                key={`${suggestion}-${supportLevel}`}
                     text={suggestion}
                     onSelect={handleSuggestionSelect}
                   />
@@ -522,41 +638,51 @@ const EALDocs = () => {
             </div>
           </div>
 
-          <div className="word-bank-tabs">
-            {categoriesForLevel
-              .filter((category) => category.items.length > 0)
-              .map((category) => (
-                <button
-                  key={category.id}
-                  type="button"
-                  className={`word-bank-tab ${activeCategory === category.id ? 'word-bank-tab--active' : ''}`}
-                  onClick={() => setActiveCategory(category.id)}
-                >
-                  <span className="word-bank-tab__dot" style={{ backgroundColor: category.color }} />
-                  {category.label}
-                </button>
-              ))}
+          <div className="word-bank-section">
+            <div className="word-bank-tabs">
+              {categoriesForLevel
+                .filter((category) => category.items.length > 0)
+                .map((category) => (
+                  <button
+                    key={category.id}
+                    type="button"
+                    className={`word-bank-tab ${activeCategory === category.id ? 'word-bank-tab--active' : ''}`}
+                    onClick={() => setActiveCategory(category.id)}
+                  >
+                    <span className="word-bank-tab__dot" style={{ backgroundColor: category.color }} />
+                    {category.label}
+                  </button>
+                ))}
+            </div>
+
+            <div className="word-bank-items">
+              {activeItems.length ? (
+                activeItems.map((item) => (
+                  <WordBankItem key={item.text} item={item} onInsert={handleWordInsert} />
+                ))
+              ) : (
+                <p className="word-bank-empty">No words at this support level yet. Try a different level.</p>
+              )}
+            </div>
           </div>
 
-          <div className="word-bank-items">
-            {activeItems.length ? (
-              activeItems.map((item) => (
-                <WordBankItem key={item.text} item={item} onInsert={handleWordInsert} />
-              ))
-            ) : (
-              <p className="word-bank-empty">No words at this support level yet. Try a different level.</p>
-            )}
-          </div>
-
-          <div className="support-card">
+          <div className="support-card support-card--coach">
             <h3>Writing coach</h3>
             <p>{focusTip}</p>
             <ul>
-              <li>Use the connectors tab to join short sentences.</li>
-              <li>Try saying your sentence aloud before writing it.</li>
-              <li>Remember to check punctuation at the end.</li>
+              <li>Check the highlighted grammar focus above before you publish.</li>
+              <li>Read your sentence aloud, then use the play button to hear it back.</li>
+              <li>Add detail with noun phrases or conjunctions to meet curriculum goals.</li>
             </ul>
           </div>
+
+          <GrammarCoach
+            analysis={grammarAnalysis}
+            onExampleSelect={handleGrammarExampleInsert}
+            hasText={Boolean(plainText.trim())}
+          />
+          <SpellCheckPanel plainText={plainText} onApplySuggestion={handleSpellSuggestion} />
+          <SpeechControls text={plainText} />
         </aside>
       </div>
     </div>
