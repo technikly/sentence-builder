@@ -8,7 +8,6 @@ import {
   Bold,
   BookOpen,
   Brain,
-  CheckCircle2,
   Download,
   FileText,
   Highlighter,
@@ -26,22 +25,14 @@ import {
   Volume2
 } from 'lucide-react';
 
-import { filterItemsByLevel, flattenWordBank, levelRank, wordBankCategories } from '../data/ealWordBank';
-import { useSpeechSynthesis } from '../hooks/useSpeechSynthesis';
-import { analyseSpelling } from '../utils/spellingInsights';
+import { filterItemsByLevel, levelRank, wordBankCategories } from '../data/ealWordBank';
+import { useOpenAITts } from '../hooks/useOpenAITts';
 import { evaluateGrammarAgainstCurriculum } from '../utils/grammarInsights';
-import { generatePredictiveSuggestions } from '../utils/predictiveSuggestions';
-import { initializeSpellChecker } from '../spellChecker';
+import { fetchLanguageInsights } from '../utils/languageInsights';
 
 const ToolbarButton = ({ icon: Icon, label, onClick }) => (
   <button type="button" className="format-button" onClick={onClick} aria-label={label} title={label}>
     <Icon size={16} />
-  </button>
-);
-
-const SuggestionChip = ({ text, onSelect }) => (
-  <button type="button" className="suggestion-chip" onClick={() => onSelect(text)}>
-    {text}
   </button>
 );
 
@@ -52,43 +43,96 @@ const WordBankItem = ({ item, onInsert }) => (
   </button>
 );
 
-const SupportLevelBadge = ({ level }) => {
-  const levelLabels = {
-    beginner: 'Beginner',
-    intermediate: 'Intermediate',
-    advanced: 'Advanced'
-  };
-
-  return <span className={`support-badge support-badge--${level}`}>{levelLabels[level]}</span>;
-};
-
 ToolbarButton.propTypes = {
   icon: PropTypes.elementType.isRequired,
   label: PropTypes.string.isRequired,
   onClick: PropTypes.func.isRequired
 };
 
-SuggestionChip.propTypes = {
-  text: PropTypes.string.isRequired,
-  onSelect: PropTypes.func.isRequired
-};
-
 WordBankItem.propTypes = {
   item: PropTypes.shape({
     text: PropTypes.string.isRequired,
-    hint: PropTypes.string,
-    level: PropTypes.string
+    hint: PropTypes.string
   }).isRequired,
   onInsert: PropTypes.func.isRequired
 };
 
-SupportLevelBadge.propTypes = {
-  level: PropTypes.oneOf(['beginner', 'intermediate', 'advanced']).isRequired
+const WORD_CLASS_META = {
+  noun: { label: 'Nouns', color: '#2563eb' },
+  verb: { label: 'Verbs', color: '#16a34a' },
+  adjective: { label: 'Adjectives', color: '#9333ea' },
+  adverb: { label: 'Adverbs', color: '#f97316' },
+  pronoun: { label: 'Pronouns', color: '#0ea5e9' },
+  determiner: { label: 'Determiners', color: '#64748b' },
+  preposition: { label: 'Prepositions', color: '#059669' },
+  conjunction: { label: 'Conjunctions', color: '#dc2626' },
+  interjection: { label: 'Interjections', color: '#facc15' },
+  number: { label: 'Numbers', color: '#ea580c' },
+  punctuation: { label: 'Punctuation', color: '#6b7280' },
+  other: { label: 'Other', color: '#94a3b8' }
 };
 
-const getLevelRank = (level) => levelRank[level] ?? 0;
+const VOICE_OPTIONS = [
+  { value: 'alloy', label: 'Alloy (friendly)' },
+  { value: 'verse', label: 'Verse (storyteller)' },
+  { value: 'lily', label: 'Lily (bright)' }
+];
 
-const escapeRegExp = (value) => value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+const tokenizeText = (text) => {
+  const tokens = [];
+  if (!text) {
+    return tokens;
+  }
+
+  const regex = /[\p{L}'’-]+|\d+|[^\s]/gu;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    tokens.push({
+      text: match[0],
+      start: match.index,
+      end: match.index + match[0].length
+    });
+  }
+  return tokens;
+};
+
+const restoreCaretPosition = (container, targetOffset) => {
+  if (!container || targetOffset == null) {
+    return;
+  }
+
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+
+  let offset = Math.max(0, targetOffset);
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  let cumulative = 0;
+
+  while (node) {
+    const next = cumulative + node.textContent.length;
+    if (offset <= next) {
+      const range = document.createRange();
+      range.setStart(node, Math.max(0, offset - cumulative));
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return;
+    }
+    cumulative = next;
+    node = walker.nextNode();
+  }
+
+  if (selection.rangeCount) {
+    const range = selection.getRangeAt(0);
+    range.selectNodeContents(container);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+};
 
 const ensureEditorFocus = (editor) => {
   if (editor && document.activeElement !== editor) {
@@ -96,36 +140,36 @@ const ensureEditorFocus = (editor) => {
   }
 };
 
+const getLevelRank = (level) => levelRank[level] ?? 0;
+
 const EALDocs = () => {
   const editorRef = useRef(null);
   const fileInputRef = useRef(null);
-  const [docTitle, setDocTitle] = useState('Untitled EAL Doc');
+  const insightTimeoutRef = useRef(null);
+
+  const [docTitle, setDocTitle] = useState('Untitled Writing Studio');
   const [supportLevel, setSupportLevel] = useState('beginner');
   const [activeCategory, setActiveCategory] = useState(wordBankCategories[0].id);
   const [wordCount, setWordCount] = useState(0);
-  const [focusTip, setFocusTip] = useState('Start by choosing a sentence starter from the bank.');
+  const [focusTip, setFocusTip] = useState('Start by choosing a sentence starter from the word bank.');
   const [plainText, setPlainText] = useState('');
   const [caretContext, setCaretContext] = useState({
     prefix: '',
     previousWord: '',
-    textBeforeCaret: ''
+    textBeforeCaret: '',
+    rawTextBeforeCaret: ''
   });
-  const [spellIssues, setSpellIssues] = useState([]);
-  const [spellLoading, setSpellLoading] = useState(false);
   const [grammarInsights, setGrammarInsights] = useState({ met: [], targets: [] });
+  const [languageInsights, setLanguageInsights] = useState({
+    tokenAnalyses: [],
+    suggestions: [],
+    ghostSuggestion: ''
+  });
+  const [insightLoading, setInsightLoading] = useState(false);
+  const [insightError, setInsightError] = useState(null);
+  const [selectedVoice, setSelectedVoice] = useState(VOICE_OPTIONS[0].value);
 
-  const {
-    supported: speechSupported,
-    voices: voiceOptions,
-    selectedVoice,
-    setSelectedVoice,
-    speak,
-    cancel: cancelSpeech,
-    pause,
-    resume,
-    speaking,
-    paused
-  } = useSpeechSynthesis({ preferredLang: 'en-GB' });
+  const { speak, pause, resume, stop, loading: ttsLoading, playing: ttsPlaying, paused: ttsPaused } = useOpenAITts();
 
   const categoriesForLevel = useMemo(
     () =>
@@ -145,12 +189,6 @@ const EALDocs = () => {
   }, [categoriesForLevel]);
 
   useEffect(() => {
-    initializeSpellChecker().catch((error) =>
-      console.error('Spell checker initialisation failed', error)
-    );
-  }, []);
-
-  useEffect(() => {
     const availableCategories = categoriesForLevel.filter((category) => category.items.length > 0);
     if (!availableCategories.length) {
       return;
@@ -160,39 +198,119 @@ const EALDocs = () => {
     }
   }, [activeCategory, categoriesForLevel]);
 
-  const uniqueWordList = useMemo(
-    () => flattenWordBank(wordBankCategories, supportLevel),
-    [supportLevel]
-  );
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (editor) {
+      editor.dataset.hasContent = 'false';
+    }
+  }, []);
+
+  const tokens = useMemo(() => tokenizeText(plainText), [plainText]);
+
+  const decoratedTokens = useMemo(() => {
+    const map = new Map();
+    (languageInsights.tokenAnalyses ?? []).forEach((entry) => {
+      if (entry && typeof entry.index === 'number') {
+        map.set(entry.index, entry);
+      }
+    });
+    return tokens.map((token, index) => ({
+      ...token,
+      analysis: map.get(index)
+    }));
+  }, [tokens, languageInsights.tokenAnalyses]);
+
+  const spellingConcerns = useMemo(() => {
+    const store = new Map();
+    decoratedTokens.forEach((token) => {
+      const analysis = token.analysis;
+      if (analysis?.correct === false) {
+        const key = token.text.toLowerCase();
+        const entry = store.get(key) ?? {
+          word: token.text,
+          count: 0,
+          suggestions: analysis.suggestions ?? []
+        };
+        entry.count += 1;
+        if (analysis.suggestions?.length) {
+          entry.suggestions = analysis.suggestions;
+        }
+        store.set(key, entry);
+      }
+    });
+    return Array.from(store.values()).sort((a, b) => b.count - a.count || a.word.localeCompare(b.word));
+  }, [decoratedTokens]);
+
+  const wordClassBreakdown = useMemo(() => {
+    const breakdown = {};
+    decoratedTokens.forEach((token) => {
+      const pos = token.analysis?.pos?.toLowerCase();
+      if (pos && WORD_CLASS_META[pos]) {
+        breakdown[pos] = (breakdown[pos] ?? 0) + 1;
+      }
+    });
+    return breakdown;
+  }, [decoratedTokens]);
+
+  const ghostSuggestion = (languageInsights.ghostSuggestion ?? '').trim();
+  const suggestionList = useMemo(() => {
+    const seen = new Set();
+    const list = [];
+    const push = (value, isGhost = false) => {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return;
+      }
+      const key = trimmed.toLowerCase();
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      list.push({ text: trimmed, ghost: isGhost });
+    };
+
+    if (ghostSuggestion) {
+      push(ghostSuggestion, true);
+    }
+    (languageInsights.suggestions ?? []).forEach((suggestion) => push(suggestion));
+    return list;
+  }, [ghostSuggestion, languageInsights.suggestions]);
+
+  const hasContent = plainText.trim().length > 0;
 
   const updateCaretContext = useCallback(() => {
     const editor = editorRef.current;
     const selection = window.getSelection();
 
     if (!editor || !selection || !selection.rangeCount) {
-      setCaretContext({ prefix: '', previousWord: '', textBeforeCaret: '' });
+      setCaretContext({ prefix: '', previousWord: '', textBeforeCaret: '', rawTextBeforeCaret: '' });
       return;
     }
 
     const focusNode = selection.focusNode;
     if (!editor.contains(focusNode)) {
-      setCaretContext({ prefix: '', previousWord: '', textBeforeCaret: '' });
+      setCaretContext({ prefix: '', previousWord: '', textBeforeCaret: '', rawTextBeforeCaret: '' });
       return;
     }
 
     const range = selection.getRangeAt(0).cloneRange();
     range.selectNodeContents(editor);
     range.setEnd(selection.focusNode, selection.focusOffset);
-    const text = range.toString().replace(/\u00a0/g, ' ');
-    const trimmed = text.replace(/\s+/g, ' ').trimEnd();
 
+    const raw = range.toString().replace(/\u00a0/g, ' ');
+    const trimmed = raw.replace(/\s+/g, ' ').trimEnd();
     const prefixMatch = trimmed.match(/([\p{L}'’-]+)$/u);
     const prefix = prefixMatch ? prefixMatch[1] : '';
     const beforePrefix = prefixMatch ? trimmed.slice(0, -prefix.length) : trimmed;
     const previousMatch = beforePrefix.trim().match(/([\p{L}'’-]+)$/u);
     const previousWord = previousMatch ? previousMatch[1] : '';
 
-    setCaretContext({ prefix, previousWord, textBeforeCaret: trimmed });
+    setCaretContext({
+      prefix,
+      previousWord,
+      textBeforeCaret: trimmed,
+      rawTextBeforeCaret: raw
+    });
   }, []);
 
   useEffect(() => {
@@ -200,13 +318,6 @@ const EALDocs = () => {
     document.addEventListener('selectionchange', handleSelectionChange);
     return () => document.removeEventListener('selectionchange', handleSelectionChange);
   }, [updateCaretContext]);
-
-  useEffect(() => {
-    const editor = editorRef.current;
-    if (editor) {
-      editor.dataset.hasContent = 'false';
-    }
-  }, []);
 
   const syncEditorState = useCallback(() => {
     const editor = editorRef.current;
@@ -220,15 +331,18 @@ const EALDocs = () => {
     editor.dataset.hasContent = words.length > 0 ? 'true' : 'false';
   }, []);
 
-  const applyCommand = useCallback((command, value) => {
-    const editor = editorRef.current;
-    if (!editor) {
-      return;
-    }
-    ensureEditorFocus(editor);
-    document.execCommand(command, false, value);
-    updateCaretContext();
-  }, [updateCaretContext]);
+  const applyCommand = useCallback(
+    (command, value) => {
+      const editor = editorRef.current;
+      if (!editor) {
+        return;
+      }
+      ensureEditorFocus(editor);
+      document.execCommand(command, false, value);
+      updateCaretContext();
+    },
+    [updateCaretContext]
+  );
 
   const insertTextAtCursor = useCallback(
     (text) => {
@@ -257,7 +371,7 @@ const EALDocs = () => {
     if (!editor) {
       return false;
     }
-    const regex = new RegExp(`\\b${escapeRegExp(targetWord)}\\b`, 'i');
+    const regex = new RegExp(`\\b${targetWord.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i');
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
     while (walker.nextNode()) {
       const node = walker.currentNode;
@@ -291,25 +405,28 @@ const EALDocs = () => {
     [insertTextAtCursor]
   );
 
-  const handleSpeakDocument = useCallback(() => {
-    const editor = editorRef.current;
-    const content = editor?.innerText ?? '';
-    if (content.trim()) {
-      speak(content);
+  const handleSpeakDocument = useCallback(async () => {
+    if (!plainText.trim()) {
+      return;
     }
-  }, [speak]);
+    try {
+      await speak(plainText, selectedVoice);
+    } catch (error) {
+      console.error('Unable to play speech', error);
+    }
+  }, [plainText, selectedVoice, speak]);
 
   const handlePauseResume = useCallback(() => {
-    if (paused) {
+    if (ttsPaused) {
       resume();
     } else {
       pause();
     }
-  }, [pause, resume, paused]);
+  }, [pause, resume, ttsPaused]);
 
   const handleStopSpeech = useCallback(() => {
-    cancelSpeech();
-  }, [cancelSpeech]);
+    stop();
+  }, [stop]);
 
   const handleImportClick = useCallback(() => {
     fileInputRef.current?.click();
@@ -335,7 +452,6 @@ const EALDocs = () => {
       };
 
       reader.readAsText(file);
-      // reset input so the same file can be chosen again
       event.target.value = '';
     },
     [syncEditorState, updateCaretContext]
@@ -351,25 +467,13 @@ const EALDocs = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    const safeTitle = docTitle.trim() || 'eal-doc';
+    const safeTitle = docTitle.trim() || 'writing-studio';
     link.download = `${safeTitle}.txt`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   }, [docTitle]);
-
-  const suggestions = useMemo(
-    () =>
-      generatePredictiveSuggestions({
-        caretContext,
-        categoryLookup,
-        uniqueWordList,
-        grammarTargets: grammarInsights.targets,
-        supportLevel
-      }),
-    [caretContext, categoryLookup, uniqueWordList, grammarInsights.targets, supportLevel]
-  );
 
   const handleSuggestionSelect = useCallback(
     (suggestion) => {
@@ -397,17 +501,58 @@ const EALDocs = () => {
     [caretContext.prefix, syncEditorState, updateCaretContext]
   );
 
-  const handleEditorInput = useCallback(
-    () => {
-      syncEditorState();
-      updateCaretContext();
-    },
-    [syncEditorState, updateCaretContext]
-  );
-
-  const handleEditorFocus = useCallback(() => {
+  const handleEditorInput = useCallback(() => {
+    syncEditorState();
     updateCaretContext();
-  }, [updateCaretContext]);
+  }, [syncEditorState, updateCaretContext]);
+
+  const applyTokenDecorations = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    const offset = caretContext.rawTextBeforeCaret?.length ?? null;
+    const selection = window.getSelection();
+    const selectionInside = selection && selection.rangeCount > 0 && editor.contains(selection.focusNode);
+
+    const fragment = document.createDocumentFragment();
+    let lastIndex = 0;
+
+    decoratedTokens.forEach((token) => {
+      if (token.start > lastIndex) {
+        fragment.appendChild(document.createTextNode(plainText.slice(lastIndex, token.start)));
+      }
+      const span = document.createElement('span');
+      span.textContent = plainText.slice(token.start, token.end);
+      span.className = 'editor-token';
+      const pos = token.analysis?.pos?.toLowerCase();
+      if (pos && WORD_CLASS_META[pos]) {
+        span.dataset.pos = pos;
+        span.classList.add(`editor-token--${pos}`);
+      }
+      if (token.analysis?.correct === false) {
+        span.classList.add('editor-token--misspelled');
+      }
+      fragment.appendChild(span);
+      lastIndex = token.end;
+    });
+
+    if (lastIndex < plainText.length) {
+      fragment.appendChild(document.createTextNode(plainText.slice(lastIndex)));
+    }
+
+    editor.innerHTML = '';
+    editor.appendChild(fragment);
+
+    if (selectionInside && offset != null) {
+      restoreCaretPosition(editor, offset);
+    }
+  }, [decoratedTokens, plainText, caretContext.rawTextBeforeCaret]);
+
+  useEffect(() => {
+    applyTokenDecorations();
+  }, [applyTokenDecorations]);
 
   useEffect(() => {
     const trimmed = plainText.trim();
@@ -440,48 +585,50 @@ const EALDocs = () => {
   }, [plainText]);
 
   useEffect(() => {
-    let cancelled = false;
+    if (insightTimeoutRef.current) {
+      clearTimeout(insightTimeoutRef.current);
+    }
 
-    const runAnalysis = async () => {
-      const trimmed = plainText.trim();
-      if (!trimmed) {
-        if (!cancelled) {
-          setSpellIssues([]);
-          setSpellLoading(false);
-        }
-        return;
-      }
+    if (!plainText.trim()) {
+      setLanguageInsights({ tokenAnalyses: [], suggestions: [], ghostSuggestion: '' });
+      setInsightLoading(false);
+      setInsightError(null);
+      return;
+    }
 
-      setSpellLoading(true);
+    const controller = new AbortController();
+    setInsightLoading(true);
+    const timer = setTimeout(async () => {
       try {
-        const issues = await analyseSpelling(trimmed);
-        if (!cancelled) {
-          setSpellIssues(issues);
-        }
+        const data = await fetchLanguageInsights({
+          text: plainText,
+          tokens,
+          signal: controller.signal
+        });
+        setLanguageInsights(data);
+        setInsightError(null);
       } catch (error) {
-        console.error('Spell analysis failed', error);
-        if (!cancelled) {
-          setSpellIssues([]);
+        if (error.name !== 'AbortError') {
+          console.error('Language insights failed', error);
+          setInsightError('Unable to refresh writing insights right now.');
         }
       } finally {
-        if (!cancelled) {
-          setSpellLoading(false);
-        }
+        setInsightLoading(false);
       }
-    };
+    }, 450);
 
-    runAnalysis();
+    insightTimeoutRef.current = timer;
 
     return () => {
-      cancelled = true;
+      controller.abort();
+      clearTimeout(timer);
     };
-  }, [plainText]);
+  }, [plainText, tokens]);
 
   const activeCategoryData = categoryLookup.get(activeCategory);
   const activeItems = activeCategoryData?.items ?? [];
   const curriculumTargets = grammarInsights.targets;
   const achievedGrammar = grammarInsights.met;
-  const hasContent = plainText.trim().length > 0;
 
   return (
     <div className="app-shell">
@@ -504,14 +651,18 @@ const EALDocs = () => {
               onChange={(event) => setDocTitle(event.target.value)}
               aria-label="Document title"
             />
-            <nav className="doc-menu">
-              <span>File</span>
-              <span>Edit</span>
+            <div className="doc-menu">
+              <span onClick={handleImportClick} role="button" tabIndex={0}>
+                Import
+              </span>
+              <span onClick={handleExport} role="button" tabIndex={0}>
+                Export
+              </span>
               <span>Insert</span>
               <span>Format</span>
               <span>Tools</span>
               <span>Help</span>
-            </nav>
+            </div>
           </div>
         </div>
         <div className="app-toolbar__right">
@@ -529,148 +680,19 @@ const EALDocs = () => {
             </select>
           </div>
           <button type="button" className="share-button">
-            <Share2 size={16} />
-            Share support doc
+            <Share2 size={18} />
+            Share
           </button>
         </div>
       </header>
 
-      <div className="format-toolbar">
-        <ToolbarButton icon={Bold} label="Bold" onClick={() => applyCommand('bold')} />
-        <ToolbarButton icon={Italic} label="Italic" onClick={() => applyCommand('italic')} />
-        <ToolbarButton icon={Underline} label="Underline" onClick={() => applyCommand('underline')} />
-        <ToolbarButton icon={Highlighter} label="Highlight" onClick={() => applyCommand('hiliteColor', '#fff3b0')} />
-        <div className="format-toolbar__divider" />
-        <ToolbarButton icon={AlignLeft} label="Align left" onClick={() => applyCommand('justifyLeft')} />
-        <ToolbarButton icon={AlignCenter} label="Align centre" onClick={() => applyCommand('justifyCenter')} />
-        <ToolbarButton icon={AlignJustify} label="Justify" onClick={() => applyCommand('justifyFull')} />
-        <div className="format-toolbar__divider" />
-        <ToolbarButton icon={List} label="Bullet list" onClick={() => applyCommand('insertUnorderedList')} />
-        <ToolbarButton icon={ListOrdered} label="Numbered list" onClick={() => applyCommand('insertOrderedList')} />
-        <div className="format-toolbar__spacer" />
-        <button type="button" className="format-button" onClick={handleImportClick}>
-          <Upload size={16} />
-          <span>Import</span>
-        </button>
-        <button type="button" className="format-button" onClick={handleExport}>
-          <Download size={16} />
-          <span>Export</span>
-        </button>
-      </div>
-
-      <div className="doc-layout">
-        <div className="doc-wrapper">
-          <div className="suggestion-bar">
-            <div className="suggestion-bar__header">
-              <Sparkles size={16} />
-              <span>Smart suggestions</span>
-              <SupportLevelBadge level={supportLevel} />
-            </div>
-            <div className="suggestion-bar__chips">
-              {suggestions.length ? (
-                suggestions.map((suggestion) => (
-                  <SuggestionChip
-                    key={`${suggestion}-${supportLevel}`}
-                    text={suggestion}
-                    onSelect={handleSuggestionSelect}
-                  />
-                ))
-              ) : (
-                <span className="suggestion-empty">Type a word to see ideas appear here.</span>
-              )}
-            </div>
-          </div>
-
-          <div className="tts-controls">
-            <div className="tts-controls__summary">
-              <Volume2 size={22} />
-              <div>
-                <h3>Read aloud</h3>
-                <p>Hear your ideas in a natural UK English voice.</p>
-              </div>
-            </div>
-            {speechSupported ? (
-              <div className="tts-controls__actions">
-                {voiceOptions.length ? (
-                  <select
-                    className="tts-select"
-                    value={selectedVoice}
-                    onChange={(event) => setSelectedVoice(event.target.value)}
-                    aria-label="Choose a speaking voice"
-                  >
-                    {voiceOptions.map((voice) => (
-                      <option key={voice.name} value={voice.name}>
-                        {voice.label}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <span className="tts-voice-loading">Loading voices…</span>
-                )}
-                <div className="tts-controls__buttons">
-                  <button
-                    type="button"
-                    className="tts-button"
-                    onClick={handleSpeakDocument}
-                    disabled={!hasContent}
-                  >
-                    <PlayCircle size={20} />
-                    {speaking && !paused ? 'Restart' : 'Play'}
-                  </button>
-                  <button
-                    type="button"
-                    className="tts-button"
-                    onClick={handlePauseResume}
-                    disabled={!speaking}
-                  >
-                    {paused ? <PlayCircle size={20} /> : <PauseCircle size={20} />}
-                    {paused ? 'Resume' : 'Pause'}
-                  </button>
-                  <button
-                    type="button"
-                    className="tts-button"
-                    onClick={handleStopSpeech}
-                    disabled={!speaking}
-                  >
-                    <StopCircle size={20} />
-                    Stop
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <p className="tts-controls__unsupported">Speech synthesis is not available on this device.</p>
-            )}
-          </div>
-
-          <div className="doc-page-wrapper">
-            <div
-              ref={editorRef}
-              className="doc-page"
-              contentEditable
-              role="textbox"
-              aria-label="Document editor"
-              spellCheck
-              data-placeholder="Type your ideas here..."
-              onInput={handleEditorInput}
-              onKeyUp={updateCaretContext}
-              onMouseUp={updateCaretContext}
-              onFocus={handleEditorFocus}
-              suppressContentEditableWarning
-            />
-          </div>
-
-          <div className="doc-status-bar">
-            <span>{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
-            <span className="doc-status-bar__tip">{focusTip}</span>
-          </div>
-        </div>
-
-        <aside className="scaffold-panel">
-          <div className="scaffold-panel__header">
+      <main className="studio">
+        <aside className="studio__panel studio__panel--bank">
+          <div className="panel-card panel-card--header">
             <BookOpen size={18} />
             <div>
               <h2>Word bank</h2>
-              <p>Tap a word or phrase to add it to your document.</p>
+              <p>Tap a word or phrase to add it to your writing.</p>
             </div>
           </div>
 
@@ -692,15 +714,167 @@ const EALDocs = () => {
 
           <div className="word-bank-items">
             {activeItems.length ? (
-              activeItems.map((item) => (
-                <WordBankItem key={item.text} item={item} onInsert={handleWordInsert} />
-              ))
+              activeItems.map((item) => <WordBankItem key={item.text} item={item} onInsert={handleWordInsert} />)
             ) : (
               <p className="word-bank-empty">No words at this support level yet. Try a different level.</p>
             )}
           </div>
 
-          <div className="support-card">
+          <div className="panel-card panel-card--legend">
+            <h3>Word classes</h3>
+            <ul className="word-class-legend">
+              {Object.entries(WORD_CLASS_META).map(([key, meta]) => (
+                <li key={key}>
+                  <span className={`word-class-chip word-class-chip--${key}`} aria-hidden="true" />
+                  <span>{meta.label}</span>
+                  <span className="word-class-count">{wordClassBreakdown[key] ?? 0}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </aside>
+
+        <section className="studio__center">
+          <div className="writing-hub">
+            <div className="writing-hub__zone writing-hub__zone--north">
+              <div className="ring-card">
+                <div className="format-toolbar">
+                  <ToolbarButton icon={Bold} label="Bold" onClick={() => applyCommand('bold')} />
+                  <ToolbarButton icon={Italic} label="Italic" onClick={() => applyCommand('italic')} />
+                  <ToolbarButton icon={Underline} label="Underline" onClick={() => applyCommand('underline')} />
+                  <ToolbarButton icon={Highlighter} label="Highlight" onClick={() => applyCommand('hiliteColor', '#fff59d')} />
+                  <div className="format-toolbar__divider" />
+                  <ToolbarButton icon={AlignLeft} label="Align left" onClick={() => applyCommand('justifyLeft')} />
+                  <ToolbarButton icon={AlignCenter} label="Align centre" onClick={() => applyCommand('justifyCenter')} />
+                  <ToolbarButton icon={AlignJustify} label="Justify" onClick={() => applyCommand('justifyFull')} />
+                  <div className="format-toolbar__divider" />
+                  <ToolbarButton icon={List} label="Bullet list" onClick={() => applyCommand('insertUnorderedList')} />
+                  <ToolbarButton icon={ListOrdered} label="Numbered list" onClick={() => applyCommand('insertOrderedList')} />
+                  <div className="format-toolbar__spacer" />
+                  <div className="format-toolbar__meta">
+                    <span className="format-toolbar__metric">
+                      <Sparkles size={16} /> {wordCount} {wordCount === 1 ? 'word' : 'words'}
+                    </span>
+                    <span className="format-toolbar__metric format-toolbar__metric--status">
+                      {insightLoading ? 'Analysing writing…' : insightError ?? 'Insights are up to date'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="writing-hub__zone writing-hub__zone--west">
+              <div className="ring-card ring-card--vertical">
+                <button type="button" className="ring-action" onClick={handleImportClick}>
+                  <Upload size={16} />
+                  Import text
+                </button>
+                <button type="button" className="ring-action" onClick={handleExport}>
+                  <Download size={16} />
+                  Download
+                </button>
+                <button type="button" className="ring-action" onClick={() => handleSuggestionSelect('and ')}>
+                  <Sparkles size={16} />
+                  Add connector
+                </button>
+              </div>
+            </div>
+
+            <div className="writing-hub__core">
+              <div className="writing-surface" data-ghost={ghostSuggestion}>
+                <div
+                  ref={editorRef}
+                  className="writing-editor"
+                  contentEditable
+                  role="textbox"
+                  aria-label="Document editor"
+                  spellCheck={false}
+                  data-placeholder="Type your ideas here..."
+                  onInput={handleEditorInput}
+                  onKeyUp={updateCaretContext}
+                  onMouseUp={updateCaretContext}
+                  onFocus={updateCaretContext}
+                  suppressContentEditableWarning
+                />
+                {ghostSuggestion ? (
+                  <div className="writing-ghost" aria-hidden="true">
+                    {ghostSuggestion}
+                  </div>
+                ) : null}
+              </div>
+              <div className="writing-hint">
+                <span>{focusTip}</span>
+              </div>
+            </div>
+
+            <div className="writing-hub__zone writing-hub__zone--east">
+              <div className="ring-card">
+                <h3>Hear it aloud</h3>
+                <p>Use the OpenAI narrator to check the flow of your writing.</p>
+                <div className="tts-voice-picker">
+                  <Volume2 size={16} />
+                  <label htmlFor="voice-choice">Voice</label>
+                  <select
+                    id="voice-choice"
+                    value={selectedVoice}
+                    onChange={(event) => setSelectedVoice(event.target.value)}
+                  >
+                    {VOICE_OPTIONS.map((voice) => (
+                      <option key={voice.value} value={voice.value}>
+                        {voice.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="tts-controls__buttons">
+                  <button
+                    type="button"
+                    className="tts-button"
+                    onClick={handleSpeakDocument}
+                    disabled={!hasContent || ttsLoading}
+                  >
+                    <PlayCircle size={20} />
+                    {ttsPlaying && !ttsPaused ? 'Restart' : ttsLoading ? 'Loading' : 'Play'}
+                  </button>
+                  <button type="button" className="tts-button" onClick={handlePauseResume} disabled={!ttsPlaying}>
+                    {ttsPaused ? <PlayCircle size={20} /> : <PauseCircle size={20} />}
+                    {ttsPaused ? 'Resume' : 'Pause'}
+                  </button>
+                  <button type="button" className="tts-button" onClick={handleStopSpeech} disabled={!ttsPlaying}>
+                    <StopCircle size={20} />
+                    Stop
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="writing-hub__zone writing-hub__zone--south">
+              <div className="ring-card">
+                <h3>Suggested words</h3>
+                <p className="suggestion-caption">Tap a grey suggestion to add it instantly.</p>
+                <div className="writing-suggestions">
+                  {suggestionList.length ? (
+                    suggestionList.map((suggestion) => (
+                      <button
+                        key={suggestion.text}
+                        type="button"
+                        className={`writing-suggestion ${suggestion.ghost ? 'writing-suggestion--ghost' : ''}`}
+                        onClick={() => handleSuggestionSelect(suggestion.text)}
+                      >
+                        {suggestion.text}
+                      </button>
+                    ))
+                  ) : (
+                    <span className="writing-suggestions__empty">Suggestions will appear as you type.</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <aside className="studio__panel studio__panel--insights">
+          <div className="panel-card">
             <h3>Writing coach</h3>
             <p>{focusTip}</p>
             <ul>
@@ -710,21 +884,21 @@ const EALDocs = () => {
             </ul>
           </div>
 
-          <div className="insight-card">
-            <div className="insight-card__header">
+          <div className="panel-card">
+            <div className="panel-card__header">
               <AlertTriangle size={18} />
               <div>
                 <h3>Spell check</h3>
-                <p>Uses a UK English dictionary with child-friendly filtering.</p>
+                <p>Powered by OpenAI with a focus on child-friendly language.</p>
               </div>
             </div>
-            {spellLoading ? (
+            {insightLoading ? (
               <p className="insight-card__loading">Checking spelling…</p>
             ) : !hasContent ? (
               <p className="insight-card__loading">Start typing to see spelling support.</p>
-            ) : spellIssues.length ? (
+            ) : spellingConcerns.length ? (
               <ul className="insight-list">
-                {spellIssues.map((issue) => (
+                {spellingConcerns.map((issue) => (
                   <li key={issue.word} className="spell-issue">
                     <div className="spell-issue__meta">
                       <span className="spell-issue__word">{issue.word}</span>
@@ -743,7 +917,7 @@ const EALDocs = () => {
                           </button>
                         ))
                       ) : (
-                        <span className="spell-issue__no-suggestion">No dictionary suggestions</span>
+                        <span className="spell-issue__no-suggestion">No suggestions</span>
                       )}
                     </div>
                   </li>
@@ -754,8 +928,8 @@ const EALDocs = () => {
             )}
           </div>
 
-          <div className="insight-card">
-            <div className="insight-card__header">
+          <div className="panel-card">
+            <div className="panel-card__header">
               <Brain size={18} />
               <div>
                 <h3>Grammar goals</h3>
@@ -808,7 +982,7 @@ const EALDocs = () => {
                 <ul className="insight-list insight-list--compact">
                   {achievedGrammar.map((feature) => (
                     <li key={feature.id} className="grammar-target grammar-target--achieved">
-                      <CheckCircle2 size={16} />
+                      <Sparkles size={16} />
                       <span>{feature.label}</span>
                     </li>
                   ))}
@@ -817,10 +991,9 @@ const EALDocs = () => {
             ) : null}
           </div>
         </aside>
-      </div>
+      </main>
     </div>
   );
 };
 
 export default EALDocs;
-
