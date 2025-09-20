@@ -1,12 +1,10 @@
-import SentenceBuilder from './components/SentenceBuilder';
 import './App.css';
+import EALDocsWorkspace from './components/EALDocsWorkspace';
 
 function App() {
   return (
-    <div className="min-h-screen bg-white">
-      <main className="h-screen">
-        <SentenceBuilder />
-      </main>
+    <div className="min-h-screen bg-slate-100">
+      <EALDocsWorkspace />
     </div>
   );
 }
