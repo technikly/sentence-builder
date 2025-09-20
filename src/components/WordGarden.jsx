@@ -3,85 +3,26 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { AlertTriangle, Dot, Save, Volume2 } from 'lucide-react';
 
+// Resolved WordGarden component (merge conflicts removed)
+// - Token-based editing (insert/replace/delete words & punctuation)
+// - Dynamic suggestions & gradients
+// - Speech on click, Save to localStorage
+// - Invisible input captures typing
+
 const DICTIONARY = [
-  'cat',
-  'catch',
-  'caterpillar',
-  'castle',
-  'car',
-  'card',
-  'care',
-  'careful',
-  'dog',
-  'door',
-  'down',
-  'draw',
-  'dream',
-  'drift',
-  'dragon',
-  'drop',
-  'apple',
-  'apricot',
-  'astronaut',
-  'ask',
-  'asleep',
-  'after',
-  'again',
-  'quick',
-  'quiet',
-  'quiver',
-  'queen',
-  'question',
-  'quack',
-  'happy',
-  'happen',
-  'harbor',
-  'harmony',
-  'harvest',
-  'hat',
-  'play',
-  'plane',
-  'planet',
-  'please',
-  'place',
-  'story',
-  'stork',
-  'storm',
-  'store',
-  'stone',
-  'strong',
-  'bright',
-  'bring',
-  'breeze',
-  'bread',
-  'break',
-  'blue',
-  'black',
-  'brown',
-  'brave',
-  'broom',
-  'green',
-  'gold',
-  'glow',
-  'glide',
-  'glitter',
-  'sun',
-  'sand',
-  'song',
-  'sound',
-  'soft',
-  'some',
-  'time',
-  'tiny',
-  'tiger',
-  'tired',
-  'tickle',
-  'magic',
-  'make',
-  'made',
-  'many',
-  'march',
-  'marble'
+  'cat','catch','caterpillar','castle','car','card','care','careful',
+  'dog','door','down','draw','dream','drift','dragon','drop',
+  'apple','apricot','astronaut','ask','asleep','after','again',
+  'quick','quiet','quiver','queen','question','quack',
+  'happy','happen','harbor','harmony','harvest','hat',
+  'play','plane','planet','please','place',
+  'story','stork','storm','store','stone','strong',
+  'bright','bring','breeze','bread','break',
+  'blue','black','brown','brave','broom',
+  'green','gold','glow','glide','glitter',
+  'sun','sand','song','sound','soft','some',
+  'time','tiny','tiger','tired','tickle',
+  'magic','make','made','many','march','marble'
 ];
 
 const PUNCT = ['.', ',', '!', '?', '…', ';', ':'];
@@ -112,6 +53,15 @@ function sizeForRank(rank) {
   return 'text-4xl md:text-5xl';
 }
 
+function tokensToText(list) {
+  return list.reduce((acc, token) => {
+    if (PUNCT.includes(token)) {
+      return acc ? `${acc}${token}` : token;
+    }
+    return acc ? `${acc} ${token}` : token;
+  }, '');
+}
+
 async function predictNext(context, currentWord) {
   await new Promise((resolve) => setTimeout(resolve, 120));
 
@@ -119,10 +69,7 @@ async function predictNext(context, currentWord) {
   let candidates = DICTIONARY.filter((word) => word.startsWith(prefix));
 
   if (prefix.length === 0) {
-    const tokens = context
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean);
+    const tokens = context.trim().split(/\s+/).filter(Boolean);
     const last = tokens.at(-1) ?? '';
     candidates = last
       ? DICTIONARY.filter((word) => word.startsWith(last[0]))
@@ -138,23 +85,33 @@ function randomGradientStep() {
 }
 
 export default function WordGarden() {
-  const [sentence, setSentence] = useState('');
+  // token-based state (words + punctuation as separate tokens)
+  const [tokens, setTokens] = useState([]);
   const [current, setCurrent] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [punctuation, setPunctuation] = useState(PUNCT);
   const [bgIndex, setBgIndex] = useState(0);
   const [errorFlag, setErrorFlag] = useState(false);
+  // cursor: where to insert/replace in tokens
+  const [cursor, setCursor] = useState({ type: 'insert', index: 0 });
+  const [activeToken, setActiveToken] = useState(null);
   const inputRef = useRef(null);
+
+  const limitedIndex = Math.min(cursor.index ?? tokens.length, tokens.length);
+  const contextBefore = useMemo(
+    () => tokensToText(tokens.slice(0, limitedIndex)),
+    [tokens, limitedIndex]
+  );
 
   const focusNode = useMemo(() => {
     const trimmedCurrent = current.trim();
-    if (trimmedCurrent) {
-      return trimmedCurrent;
-    }
-    const trimmedSentence = sentence.trim();
-    return trimmedSentence || PLACEHOLDER_ROOT;
-  }, [current, sentence]);
+    if (trimmedCurrent) return trimmedCurrent;
+    if (activeToken != null && tokens[activeToken]) return tokens[activeToken];
+    const lastToken = tokens.at(-1);
+    return lastToken || PLACEHOLDER_ROOT;
+  }, [current, activeToken, tokens]);
 
+  // error underline heuristic
   useEffect(() => {
     const prefix = current.trim().toLowerCase();
     if (prefix.length >= 3) {
@@ -165,137 +122,206 @@ export default function WordGarden() {
     }
   }, [current]);
 
+  // predictions
   useEffect(() => {
     let alive = true;
-    predictNext(sentence, current).then((result) => {
+    predictNext(contextBefore, current).then((result) => {
       if (!alive) return;
       setSuggestions(result.words);
       setPunctuation(result.punctuation);
     });
-    return () => {
-      alive = false;
-    };
-  }, [sentence, current]);
+    return () => { alive = false; };
+  }, [contextBefore, current]);
 
+  // focus hidden input
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  const backgroundStyle = useMemo(
-    () => ({
-      backgroundImage: GRADIENTS[bgIndex % GRADIENTS.length]
-    }),
-    [bgIndex]
-  );
+  // keep cursor in-bounds when tokens change
+  useEffect(() => {
+    setCursor((prev) => {
+      const maxIndex = tokens.length;
+      const safeIndex = Math.min(prev.index ?? maxIndex, maxIndex);
+      if (prev.type === 'replace' && safeIndex >= maxIndex) {
+        return { type: 'insert', index: maxIndex };
+      }
+      if (safeIndex === (prev.index ?? maxIndex)) return prev;
+      return { ...prev, index: safeIndex };
+    });
+    setActiveToken((prev) => (prev != null && prev >= tokens.length ? null : prev));
+  }, [tokens.length]);
 
   const ranked = suggestions.slice(0, 3);
 
-  function resetInput() {
+  // background style
+  const backgroundStyle = useMemo(
+    () => ({ backgroundImage: GRADIENTS[bgIndex % GRADIENTS.length] }),
+    [bgIndex]
+  );
+
+  function syncInput(value) {
     if (inputRef.current) {
-      inputRef.current.value = '';
+      inputRef.current.value = value;
+      inputRef.current.focus();
+      try { inputRef.current.setSelectionRange(value.length, value.length); } catch {}
     }
-    setCurrent('');
+    setCurrent(value);
   }
+
+  function resetInput() { syncInput(''); }
 
   function commitWord(word) {
     const safeWord = word.trim();
-    if (!safeWord) {
-      resetInput();
-      return;
-    }
+    if (!safeWord) { resetInput(); return; }
 
-    setSentence((prev) => {
-      const trimmed = prev.trim();
-      const nextSentence = trimmed ? `${trimmed} ${safeWord}` : safeWord;
-      return `${nextSentence} `;
+    let nextIndex = 0;
+    setTokens((prev) => {
+      const next = [...prev];
+      if (cursor.type === 'replace' && cursor.index < next.length) {
+        next[cursor.index] = safeWord;
+        nextIndex = cursor.index + 1;
+      } else {
+        const insertAt = Math.min(cursor.index ?? prev.length, prev.length);
+        next.splice(insertAt, 0, safeWord);
+        nextIndex = insertAt + 1;
+      }
+      return next;
     });
 
     resetInput();
-    setBgIndex((index) => (index + randomGradientStep()) % GRADIENTS.length);
+    setActiveToken(null);
+    setCursor({ type: 'insert', index: nextIndex });
+    setBgIndex((i) => (i + randomGradientStep()) % GRADIENTS.length);
   }
 
   function commitPunctuation(mark) {
-    setSentence((prev) => {
-      const typed = current.trim();
-      const trimmedPrev = prev.trim();
-      const base = typed ? (trimmedPrev ? `${trimmedPrev} ${typed}` : typed) : trimmedPrev;
-      const needsSpace = [',', ';', ':'].includes(mark);
-      const post = needsSpace ? ' ' : ' ';
-      if (!base) {
-        return `${mark}${post}`;
+    let nextIndex = 0;
+    setTokens((prev) => {
+      const next = [...prev];
+      if (cursor.type === 'replace' && cursor.index < next.length) {
+        next[cursor.index] = mark;
+        nextIndex = cursor.index + 1;
+      } else {
+        const insertAt = Math.min(cursor.index ?? prev.length, prev.length);
+        next.splice(insertAt, 0, mark);
+        nextIndex = insertAt + 1;
       }
-      return `${base}${mark}${post}`;
+      return next;
     });
 
     resetInput();
-    setBgIndex((index) => (index + randomGradientStep()) % GRADIENTS.length);
+    setActiveToken(null);
+    setCursor({ type: 'insert', index: nextIndex });
+    setBgIndex((i) => (i + randomGradientStep()) % GRADIENTS.length);
   }
 
   function speak(text) {
-    if (typeof window === 'undefined' || !text) {
-      return;
-    }
+    if (typeof window === 'undefined' || !text) return;
     try {
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.lang = 'en-GB';
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utterance);
-    } catch (error) {
-      console.warn('Speech synthesis failed', error);
+    } catch (e) {
+      console.warn('Speech synthesis failed', e);
     }
   }
 
-  function handleChange(event) {
-    const { value } = event.target;
+  function handleChange(e) {
+    const { value } = e.target;
     if (/\s/.test(value)) {
       const safe = current.trim();
-      if (safe) {
-        commitWord(safe);
-      }
+      if (safe) commitWord(safe);
       resetInput();
       return;
     }
     setCurrent(value);
   }
 
-  function handleKeyDown(event) {
-    if (event.key === 'Enter') {
-      event.preventDefault();
+  function removeToken(index) {
+    if (index < 0) return;
+    let nextIndex = 0;
+    setTokens((prev) => {
+      if (index >= prev.length) return prev;
+      const next = [...prev];
+      next.splice(index, 1);
+      nextIndex = Math.min(index, next.length);
+      return next;
+    });
+    setCursor({ type: 'insert', index: nextIndex });
+    setActiveToken(null);
+    setBgIndex((i) => (i + randomGradientStep()) % GRADIENTS.length);
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
       const safe = current.trim();
-      if (safe) {
-        commitWord(safe);
-      }
+      if (safe) commitWord(safe);
       return;
     }
-
-    if (event.key === 'Backspace' && current.length === 0) {
-      event.preventDefault();
-      setSentence((prev) => {
-        const trimmed = prev.trim();
-        if (!trimmed) {
-          return '';
-        }
-        const parts = trimmed.split(/\s+/);
-        parts.pop();
-        return parts.length ? `${parts.join(' ')} ` : '';
-      });
+    if (e.key === 'Backspace' && current.length === 0) {
+      e.preventDefault();
+      if (cursor.type === 'replace' && cursor.index < tokens.length) {
+        removeToken(cursor.index);
+        resetInput();
+        return;
+      }
+      if (cursor.index > 0) {
+        removeToken(cursor.index - 1);
+        resetInput();
+      }
     }
   }
 
   function handleSave() {
     try {
-      const payload = { sentence: sentence.trim(), ts: Date.now() };
+      const story = tokensToText(tokens).trim();
+      const payload = { sentence: story, ts: Date.now() };
       const existing = JSON.parse(localStorage.getItem('wordgarden:saves') ?? '[]');
       const updated = [payload, ...existing].slice(0, 50);
       localStorage.setItem('wordgarden:saves', JSON.stringify(updated));
-    } catch (error) {
-      console.warn('Unable to save story', error);
+    } catch (err) {
+      console.warn('Unable to save story', err);
     }
   }
 
+  function handleTokenClick(index) {
+    setActiveToken(index);
+    inputRef.current?.focus();
+  }
+  function beginReplace(index) {
+    const token = tokens[index] ?? '';
+    setCursor({ type: 'replace', index });
+    syncInput(token);
+  }
+  function beginAddBefore(index) {
+    setCursor({ type: 'insert', index });
+    resetInput();
+    inputRef.current?.focus();
+  }
+  function beginAddAfter(index) {
+    setCursor({ type: 'insert', index: index + 1 });
+    resetInput();
+    inputRef.current?.focus();
+  }
+  function deleteTokenAt(index) {
+    removeToken(index);
+    resetInput();
+  }
+  function continueAtEnd() {
+    setActiveToken(null);
+    setCursor({ type: 'insert', index: tokens.length });
+    resetInput();
+    inputRef.current?.focus();
+  }
+
+  const showPlaceholder = tokens.length === 0 && current.trim().length === 0;
+
   return (
     <div
-      className="relative flex h-screen w-screen select-none items-center justify-center overflow-hidden"
+      className="relative flex h-screen w-screen select-none items-center justify-center overflow-hidden bg-black"
       onMouseDown={() => inputRef.current?.focus()}
     >
       <motion.div
@@ -303,16 +329,16 @@ export default function WordGarden() {
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        transition={{ duration: 0.8 }}
+        transition={{ duration: 0.8, ease: 'easeInOut' }}
         className="absolute inset-0"
         style={{
-          ...backgroundStyle,
+          backgroundImage: GRADIENTS[bgIndex % GRADIENTS.length],
           backgroundSize: '200% 200%',
           filter: 'saturate(1.1)'
         }}
       />
 
-      <div className="absolute inset-0 bg-gradient-to-br from-black/20 via-black/15 to-black/30" />
+      <div className="absolute inset-0 bg-gradient-to-br from-black/40 via-black/30 to-black/50" />
 
       <div className="absolute right-4 top-4 z-30">
         <button
@@ -337,17 +363,40 @@ export default function WordGarden() {
 
       <div className="relative z-20 flex h-full w-full flex-col items-center justify-center px-6">
         <div className="max-w-5xl text-center text-white/95 drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)]">
-          <p className="text-2xl md:text-3xl leading-relaxed">
-            {sentence}
+          <div className="flex flex-wrap items-center justify-center gap-y-2 text-2xl leading-relaxed md:text-3xl">
+            {showPlaceholder ? (
+              <span className="mx-2 rounded-xl bg-white/10 px-3 py-1 text-white/70">{PLACEHOLDER_ROOT}</span>
+            ) : null}
+
+            {tokens.map((token, index) => {
+              const isActive = index === activeToken;
+              const isPunctuation = PUNCT.includes(token);
+              return (
+                <button
+                  type="button"
+                  key={`${token}-${index}`}
+                  onClick={() => handleTokenClick(index)}
+                  className={`transition-colors ${
+                    isPunctuation ? 'mx-1 px-1' : 'mx-1.5 px-1.5'
+                  } rounded-lg text-white/95 hover:bg-white/15 ${
+                    isActive ? 'bg-white/30 ring-2 ring-white/70 backdrop-blur' : ''
+                  }`}
+                >
+                  {token}
+                </button>
+              );
+            })}
+
             <span
-              className={`inline-block min-w-[1ch] border-b-2 ${
+              className={`inline-flex min-w-[1ch] border-b-2 px-1 ${
                 errorFlag ? 'border-red-400' : 'border-white/80'
               }`}
             >
               {current}
             </span>
             <span className="ml-0.5 animate-pulse">|</span>
-          </p>
+          </div>
+
           <AnimatePresence>
             {errorFlag ? (
               <motion.div
@@ -364,7 +413,55 @@ export default function WordGarden() {
           </AnimatePresence>
         </div>
 
-        <div className="mt-16 w-full max-w-6xl px-4">
+        <AnimatePresence>
+          {activeToken != null ? (
+            <motion.div
+              key="token-actions"
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="mt-6 flex flex-wrap items-center justify-center gap-3"
+            >
+              <button
+                type="button"
+                onClick={() => beginReplace(activeToken)}
+                className="rounded-xl bg-white/85 px-4 py-2 text-sm font-semibold text-slate-900 shadow hover:bg-white"
+              >
+                Edit word
+              </button>
+              <button
+                type="button"
+                onClick={() => beginAddBefore(activeToken)}
+                className="rounded-xl bg-white/20 px-4 py-2 text-sm font-semibold text-white hover:bg-white/30"
+              >
+                Add before
+              </button>
+              <button
+                type="button"
+                onClick={() => beginAddAfter(activeToken)}
+                className="rounded-xl bg-white/20 px-4 py-2 text-sm font-semibold text-white hover:bg-white/30"
+              >
+                Add after
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteTokenAt(activeToken)}
+                className="rounded-xl bg-red-500/80 px-4 py-2 text-sm font-semibold text-white shadow hover:bg-red-500"
+              >
+                Delete
+              </button>
+              <button
+                type="button"
+                onClick={continueAtEnd}
+                className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/20"
+              >
+                Continue at end
+              </button>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+
+        <div className="mt-12 w-full max-w-6xl px-4">
           <div className="flex flex-col items-center gap-16">
             <motion.div
               key={focusNode}
@@ -375,7 +472,7 @@ export default function WordGarden() {
               transition={{ type: 'spring', stiffness: 200, damping: 20 }}
               className="relative"
             >
-              <div className="rounded-3xl bg-white/20 px-6 py-3 text-xl font-semibold text-white/90 shadow-xl backdrop-blur">
+              <div className="rounded-3xl bg-white/15 px-6 py-3 text-xl font-semibold text-white/90 shadow-xl backdrop-blur">
                 {focusNode}
               </div>
               <div className="absolute -bottom-14 left-1/2 h-14 w-px -translate-x-1/2 bg-white/40" aria-hidden />
@@ -466,4 +563,3 @@ SuggestionNode.propTypes = {
   onPick: PropTypes.func.isRequired,
   onSpeak: PropTypes.func.isRequired
 };
-
