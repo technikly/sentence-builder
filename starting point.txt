@@ -1,0 +1,299 @@
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Volume2, Save, AlertTriangle, Dot } from "lucide-react";
+
+// --- WordGarden Starter ---
+// A single-file React component you can drop into a Next.js app (app or pages) or any React app.
+// Tailwind CSS is assumed. Framer Motion & lucide-react icons are used.
+// This uses a placeholder prediction machine. Swap `predictNext` with your real API call.
+// - Full-screen dynamic gradient background that dramatically changes on word commit
+// - Horizontal “family tree” suggestion nodes that resize by likelihood
+// - Speaker icon to pronounce suggestions
+// - Punctuation suggestions & error symbols
+// - Save icon (top-right) that persists the current story to localStorage
+// - Invisible input captures typing and updates predictions live
+//
+// HOW TO USE IN NEXT.JS:
+// 1) Ensure Tailwind, framer-motion, and lucide-react are installed.
+//    npm i framer-motion lucide-react
+// 2) Put this file in your app and render <WordGardenStarter /> on a page.
+// 3) Replace `predictNext` with a server-side call (e.g., /api/predict) that uses your model.
+//
+// NOTE ON API KEY: do NOT expose OPENAI_API_KEY in the browser. Call your backend route instead.
+
+// -----------------------------
+// Mock data and helpers
+// -----------------------------
+const DICTIONARY = [
+  "cat","catch","caterpillar","castle","car","card","care","careful",
+  "dog","door","down","draw","dream","drift","dragon","drop",
+  "apple","apricot","astronaut","ask","asleep","after","again",
+  "quick","quiet","quiver","queen","question","quack",
+  "happy","happen","harbor","harmony","harvest","hat",
+  "play","plane","planet","please","place",
+  "story","stork","storm","store","stone","strong",
+  "bright","bring","breeze","bread","break",
+  "blue","black","brown","brave","broom",
+  "green","gold","glow","glide","glitter",
+  "sun","sand","song","sound","soft","some",
+  "time","tiny","tiger","tired","tickle",
+  "magic","make","made","many","march","marble",
+];
+
+const PUNCT = [".", ",", "!", "?", "…", ";", ":"]; // punctuation bar
+
+function pickRandom<T>(arr: T[], n: number) {
+  const pool = [...arr];
+  const out: T[] = [];
+  while (out.length < n && pool.length) {
+    const i = Math.floor(Math.random() * pool.length);
+    out.push(pool.splice(i, 1)[0]);
+  }
+  return out;
+}
+
+function sizeForRank(rank: number) {
+  // 0 => largest, 1 => medium, 2 => small
+  return rank === 0 ? "text-6xl md:text-7xl" : rank === 1 ? "text-5xl md:text-6xl" : "text-4xl md:text-5xl";
+}
+
+// Dramatic gradient palettes (tailwind-like via inline CSS)
+const GRADIENTS = [
+  "linear-gradient(135deg, rgba(255,0,132,1) 0%, rgba(255,140,0,1) 50%, rgba(255,237,0,1) 100%)",
+  "linear-gradient(135deg, rgba(0,167,255,1) 0%, rgba(0,242,195,1) 50%, rgba(255,0,224,1) 100%)",
+  "linear-gradient(135deg, rgba(98,0,234,1) 0%, rgba(236,64,122,1) 50%, rgba(253,216,53,1) 100%)",
+  "linear-gradient(135deg, rgba(0,200,83,1) 0%, rgba(0,176,255,1) 50%, rgba(156,39,176,1) 100%)",
+  "linear-gradient(135deg, rgba(13,71,161,1) 0%, rgba(3,155,229,1) 50%, rgba(0,230,118,1) 100%)",
+];
+
+// -----------------------------
+// Placeholder “sophisticated prediction machine”
+// -----------------------------
+async function predictNext(context: string, currentWord: string): Promise<{ words: string[]; punctuation: string[] }>{
+  // Simulate latency
+  await new Promise(r => setTimeout(r, 120));
+
+  const prefix = currentWord.toLowerCase();
+  let candidates = DICTIONARY.filter(w => w.startsWith(prefix));
+  if (prefix.length === 0) {
+    // when no word is present, use the sentence so far
+    const last = context.trim().split(/\s+/).filter(Boolean).pop() || "";
+    candidates = last ? DICTIONARY.filter(w => w[0] === last[0]) : pickRandom(DICTIONARY, 10);
+  }
+
+  const top = (candidates.length ? candidates : pickRandom(DICTIONARY, 10)).slice(0, 3);
+  return { words: top, punctuation: PUNCT };
+}
+
+// -----------------------------
+// Main Component
+// -----------------------------
+export default function WordGardenStarter() {
+  const [sentence, setSentence] = useState<string>("");
+  const [current, setCurrent] = useState<string>("");
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [punct, setPunct] = useState<string[]>(PUNCT);
+  const [bgIndex, setBgIndex] = useState<number>(0);
+  const [errorFlag, setErrorFlag] = useState<boolean>(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const context = sentence;
+
+  // Compute error (simple heuristic: if current >= 3 chars and not in dictionary prefix list)
+  useEffect(() => {
+    const prefix = current.trim().toLowerCase();
+    if (prefix.length >= 3) {
+      const ok = DICTIONARY.some(w => w.startsWith(prefix));
+      setErrorFlag(!ok);
+    } else {
+      setErrorFlag(false);
+    }
+  }, [current]);
+
+  // Fetch predictions when typing
+  useEffect(() => {
+    let alive = true;
+    predictNext(context, current).then((res) => {
+      if (!alive) return;
+      setSuggestions(res.words);
+      setPunct(res.punctuation);
+    });
+    return () => { alive = false; };
+  }, [context, current]);
+
+  // Focus the hidden input so keyboard always works
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  // Dynamic background style
+  const bgStyle = useMemo(() => ({ backgroundImage: GRADIENTS[bgIndex % GRADIENTS.length] }), [bgIndex]);
+
+  function commitWord(word: string) {
+    speech(word);
+    const space = sentence.endsWith(" ") || sentence.length === 0 ? "" : " ";
+    const next = (sentence + space + word).replace(/\s+/g, " ");
+    setSentence(next + " "); // leave a trailing space for the next word
+    setCurrent("");
+    // Dramatic gradient change
+    setBgIndex(idx => (idx + 1 + Math.floor(Math.random() * 3)) % GRADIENTS.length);
+  }
+
+  function commitPunct(p: string) {
+    const trimmed = sentence.trimEnd();
+    const needsSpaceAfter = [",", ";", ":"].includes(p);
+    const spaceAfter = needsSpaceAfter ? " " : " ";
+    setSentence(trimmed + p + spaceAfter);
+    setCurrent("");
+    setBgIndex(idx => (idx + 1 + Math.floor(Math.random() * 4)) % GRADIENTS.length);
+  }
+
+  function speech(text: string) {
+    try {
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = "en-GB"; // child-friendly UK voice; adjust as needed
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utter);
+    } catch {}
+  }
+
+  function onSave() {
+    const payload = { sentence: sentence.trim(), ts: Date.now() };
+    const all = JSON.parse(localStorage.getItem("wordgarden:saves") || "[]");
+    all.unshift(payload);
+    localStorage.setItem("wordgarden:saves", JSON.stringify(all).slice(0, 50));
+  }
+
+  function onKey(e: React.ChangeEvent<HTMLInputElement>) {
+    const val = e.target.value;
+    // if the user typed a space or enter, commit the current word
+    if (/\s/.test(val)) {
+      const w = current.trim();
+      if (w) commitWord(w);
+      e.target.value = "";
+      return;
+    }
+    setCurrent(val);
+  }
+
+  const ranked = suggestions.slice(0, 3);
+
+  return (
+    <div className="relative w-screen h-screen overflow-hidden">
+      {/* Animated background */}
+      <motion.div
+        key={bgIndex}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: 0.8 }}
+        className="absolute inset-0"
+        style={{ ...bgStyle, backgroundSize: "200% 200%", filter: "saturate(1.1)", }}
+      />
+
+      {/* Dark gradient overlay to ensure text contrast */}
+      <div className="absolute inset-0 bg-gradient-to-b from-black/10 via-black/10 to-black/20" />
+
+      {/* Save button */}
+      <div className="absolute top-4 right-4 z-30">
+        <button onClick={onSave} className="flex items-center gap-2 rounded-2xl px-4 py-2 bg-white/80 hover:bg-white shadow-lg">
+          <Save className="w-5 h-5" />
+          <span className="font-medium">Save</span>
+        </button>
+      </div>
+
+      {/* Hidden input to capture typing */}
+      <input
+        ref={inputRef}
+        onChange={onKey}
+        autoFocus
+        className="absolute opacity-0 pointer-events-none"
+        aria-hidden
+      />
+
+      {/* Content */}
+      <div className="relative z-20 flex flex-col items-center justify-center w-full h-full select-none">
+        {/* Sentence so far */}
+        <div className="max-w-6xl w-[92%] text-center text-white/95 drop-shadow-[0_1px_1px_rgba(0,0,0,0.6)]">
+          <p className="text-2xl md:text-3xl leading-relaxed">
+            {sentence}
+            <span className={"inline-block min-w-[1ch] border-b-2 " + (errorFlag ? "border-red-500" : "border-white/70") }>
+              {current}
+            </span>
+            <span className="animate-pulse">|</span>
+          </p>
+          {/* Error indicator */}
+          <AnimatePresence>
+            {errorFlag && (
+              <motion.div
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                className="mt-2 inline-flex items-center gap-2 text-red-100"
+              >
+                <AlertTriangle className="w-4 h-4" />
+                <span className="text-sm">Hmm, that doesn\'t look like a known word start. Keep trying!</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Horizontal suggestion tree */}
+        <div className="mt-10 w-full max-w-7xl px-4">
+          <div className="flex items-end justify-center gap-8 md:gap-16">
+            {ranked.map((w, i) => (
+              <SuggestionNode key={w} word={w} rank={i} onSpeak={() => speech(w)} onPick={() => commitWord(w)} />
+            ))}
+          </div>
+        </div>
+
+        {/* Punctuation & symbols row */}
+        <div className="mt-10 flex flex-wrap items-center justify-center gap-2">
+          {punct.map((p) => (
+            <button
+              key={p}
+              onClick={() => commitPunct(p)}
+              className="px-4 py-2 rounded-xl bg-white/80 hover:bg-white text-gray-800 text-xl shadow"
+              aria-label={`Insert ${p}`}
+            >
+              {p}
+            </button>
+          ))}
+          {/* Extra symbols for errors etc. */}
+          <span className="mx-3 text-white/80">|</span>
+          <span className="inline-flex items-center gap-1 text-white/90"><AlertTriangle className="w-4 h-4"/> error</span>
+          <span className="inline-flex items-center gap-1 text-white/90"><Dot className="w-5 h-5"/> pause</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SuggestionNode({ word, rank, onSpeak, onPick }: { word: string; rank: number; onSpeak: () => void; onPick: () => void; }) {
+  return (
+    <motion.div
+      layout
+      initial={{ y: 20, opacity: 0, scale: 0.95 }}
+      animate={{ y: 0, opacity: 1, scale: 1 }}
+      exit={{ y: -20, opacity: 0, scale: 0.95 }}
+      transition={{ type: "spring", stiffness: 260, damping: 18 }}
+      className="group relative"
+    >
+      <div className="flex flex-col items-center">
+        <button
+          onClick={onPick}
+          className={`font-bold text-white/95 ${sizeForRank(rank)} tracking-wide drop-shadow-[0_2px_2px_rgba(0,0,0,0.5)] hover:scale-105 transition-transform`}
+        >
+          {word}
+        </button>
+        <button
+          onClick={onSpeak}
+          className="mt-2 opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 hover:bg-white text-gray-900 rounded-full p-2 shadow"
+          aria-label={`Speak ${word}`}
+        >
+          <Volume2 className="w-4 h-4" />
+        </button>
+      </div>
+    </motion.div>
+  );
+}
