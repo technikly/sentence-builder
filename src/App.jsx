@@ -1,8 +1,7 @@
-import './App.css';
-import EALDocs from './components/EALDocs';
+import WordGarden from './components/WordGarden';
 
 function App() {
-  return <EALDocs />;
+  return <WordGarden />;
 }
 
 export default App;
