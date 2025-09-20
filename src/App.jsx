@@ -1,14 +1,8 @@
-import SentenceBuilder from './components/SentenceBuilder';
 import './App.css';
+import EALDocs from './components/EALDocs';
 
 function App() {
-  return (
-    <div className="min-h-screen bg-white">
-      <main className="h-screen">
-        <SentenceBuilder />
-      </main>
-    </div>
-  );
+  return <EALDocs />;
 }
 
 export default App;
