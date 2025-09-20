@@ -1,5 +1,5 @@
 import PropTypes from 'prop-types';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlignCenter,
   AlignJustify,
@@ -25,6 +25,7 @@ import {
   Upload,
   Volume2
 } from 'lucide-react';
+import nlp from 'compromise';
 
 import { filterItemsByLevel, flattenWordBank, levelRank, wordBankCategories } from '../data/ealWordBank';
 import { useSpeechSynthesis } from '../hooks/useSpeechSynthesis';
@@ -96,6 +97,66 @@ const ensureEditorFocus = (editor) => {
   }
 };
 
+const wordTagToClass = {
+  Adjective: 'adjective',
+  Adverb: 'adverb',
+  Conjunction: 'conjunction',
+  Determiner: 'determiner',
+  Noun: 'noun',
+  Preposition: 'preposition',
+  Pronoun: 'pronoun',
+  Verb: 'verb'
+};
+
+const normaliseToken = (value = '') => value.toLowerCase().replace(/[’']/g, '');
+
+const unwrapWordTokens = (root) => {
+  const spans = root.querySelectorAll('span.word-token');
+  spans.forEach((span) => {
+    const parent = span.parentNode;
+    if (!parent) {
+      return;
+    }
+    while (span.firstChild) {
+      parent.insertBefore(span.firstChild, span);
+    }
+    parent.removeChild(span);
+  });
+};
+
+const restoreCaretPosition = (root, offset) => {
+  const selection = window.getSelection();
+  if (!selection || Number.isNaN(offset)) {
+    return;
+  }
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let remaining = offset;
+  let current = walker.nextNode();
+
+  const range = document.createRange();
+  let positioned = false;
+
+  while (current) {
+    const length = current.textContent?.length ?? 0;
+    if (remaining <= length) {
+      range.setStart(current, Math.max(0, remaining));
+      positioned = true;
+      break;
+    }
+    remaining -= length;
+    current = walker.nextNode();
+  }
+
+  if (!positioned) {
+    range.selectNodeContents(root);
+    range.collapse(false);
+  }
+
+  selection.removeAllRanges();
+  selection.addRange(range);
+};
+
 const EALDocs = () => {
   const editorRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -113,6 +174,7 @@ const EALDocs = () => {
   const [spellIssues, setSpellIssues] = useState([]);
   const [spellLoading, setSpellLoading] = useState(false);
   const [grammarInsights, setGrammarInsights] = useState({ met: [], targets: [] });
+  const [wordClassMap, setWordClassMap] = useState(new Map());
 
   const {
     supported: speechSupported,
@@ -440,6 +502,32 @@ const EALDocs = () => {
   }, [plainText]);
 
   useEffect(() => {
+    const trimmed = plainText.trim();
+    if (!trimmed) {
+      setWordClassMap(new Map());
+      return;
+    }
+
+    const doc = nlp(trimmed);
+    const terms = doc.terms().json();
+    const map = new Map();
+
+    terms.forEach((term) => {
+      const normalised = normaliseToken(term.normal || term.text || '');
+      if (!normalised) {
+        return;
+      }
+
+      if (!map.has(normalised)) {
+        const matchingTag = (term.tags || []).find((tag) => wordTagToClass[tag]);
+        map.set(normalised, matchingTag ? wordTagToClass[matchingTag] : 'unknown');
+      }
+    });
+
+    setWordClassMap(map);
+  }, [plainText]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const runAnalysis = async () => {
@@ -482,9 +570,96 @@ const EALDocs = () => {
   const curriculumTargets = grammarInsights.targets;
   const achievedGrammar = grammarInsights.met;
   const hasContent = plainText.trim().length > 0;
+  const misspeltSet = useMemo(() => {
+    const store = new Set();
+    spellIssues.forEach((issue) => {
+      store.add(normaliseToken(issue.word));
+    });
+    return store;
+  }, [spellIssues]);
+
+  const applyWordDecorations = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    const selection = window.getSelection();
+    const shouldRestore = !!selection && editor.contains(selection.anchorNode);
+    const caretOffset = shouldRestore ? caretContext.textBeforeCaret.length : Number.NaN;
+
+    unwrapWordTokens(editor);
+
+    const textHasContent = editor.innerText.trim().length > 0;
+    if (!textHasContent) {
+      return;
+    }
+
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node?.textContent?.trim()) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (node.parentElement?.closest('span.word-token')) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    });
+
+    const pattern = /([\p{L}'’-]+)/gu;
+
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode;
+      const { textContent } = textNode;
+      if (!textContent) {
+        continue;
+      }
+
+      let match;
+      let lastIndex = 0;
+      const fragment = document.createDocumentFragment();
+
+      while ((match = pattern.exec(textContent))) {
+        const [word] = match;
+        const start = match.index;
+        const end = start + word.length;
+
+        if (start > lastIndex) {
+          fragment.append(textNode.ownerDocument.createTextNode(textContent.slice(lastIndex, start)));
+        }
+
+        const span = textNode.ownerDocument.createElement('span');
+        span.classList.add('word-token');
+        const token = normaliseToken(word);
+        const role = wordClassMap.get(token) ?? 'unknown';
+        span.classList.add(`word-token--${role}`);
+        if (misspeltSet.has(token)) {
+          span.classList.add('word-token--spell-issue');
+        }
+        span.textContent = word;
+        fragment.append(span);
+        lastIndex = end;
+      }
+
+      if (lastIndex < textContent.length) {
+        fragment.append(textNode.ownerDocument.createTextNode(textContent.slice(lastIndex)));
+      }
+
+      textNode.replaceWith(fragment);
+    }
+
+    if (shouldRestore) {
+      restoreCaretPosition(editor, caretOffset);
+    }
+  }, [caretContext.textBeforeCaret, misspeltSet, wordClassMap]);
+
+  useLayoutEffect(() => {
+    applyWordDecorations();
+  }, [applyWordDecorations, plainText, spellIssues]);
 
   return (
-    <div className="app-shell">
+    <div className="app-shell writing-hub">
       <input
         ref={fileInputRef}
         type="file"
@@ -492,215 +667,43 @@ const EALDocs = () => {
         className="visually-hidden"
         onChange={handleFileImport}
       />
-      <header className="app-toolbar">
-        <div className="app-toolbar__left">
-          <div className="app-logo">
-            <FileText size={20} />
-          </div>
-          <div className="doc-meta">
-            <input
-              className="doc-title-input"
-              value={docTitle}
-              onChange={(event) => setDocTitle(event.target.value)}
-              aria-label="Document title"
-            />
-            <nav className="doc-menu">
-              <span>File</span>
-              <span>Edit</span>
-              <span>Insert</span>
-              <span>Format</span>
-              <span>Tools</span>
-              <span>Help</span>
-            </nav>
-          </div>
-        </div>
-        <div className="app-toolbar__right">
-          <div className="support-selector">
-            <Languages size={16} />
-            <label htmlFor="support-level">Support level</label>
-            <select
-              id="support-level"
-              value={supportLevel}
-              onChange={(event) => setSupportLevel(event.target.value)}
-            >
-              <option value="beginner">Beginner</option>
-              <option value="intermediate">Intermediate</option>
-              <option value="advanced">Advanced</option>
-            </select>
-          </div>
-          <button type="button" className="share-button">
-            <Share2 size={16} />
-            Share support doc
-          </button>
-        </div>
-      </header>
-
-      <div className="format-toolbar">
-        <ToolbarButton icon={Bold} label="Bold" onClick={() => applyCommand('bold')} />
-        <ToolbarButton icon={Italic} label="Italic" onClick={() => applyCommand('italic')} />
-        <ToolbarButton icon={Underline} label="Underline" onClick={() => applyCommand('underline')} />
-        <ToolbarButton icon={Highlighter} label="Highlight" onClick={() => applyCommand('hiliteColor', '#fff3b0')} />
-        <div className="format-toolbar__divider" />
-        <ToolbarButton icon={AlignLeft} label="Align left" onClick={() => applyCommand('justifyLeft')} />
-        <ToolbarButton icon={AlignCenter} label="Align centre" onClick={() => applyCommand('justifyCenter')} />
-        <ToolbarButton icon={AlignJustify} label="Justify" onClick={() => applyCommand('justifyFull')} />
-        <div className="format-toolbar__divider" />
-        <ToolbarButton icon={List} label="Bullet list" onClick={() => applyCommand('insertUnorderedList')} />
-        <ToolbarButton icon={ListOrdered} label="Numbered list" onClick={() => applyCommand('insertOrderedList')} />
-        <div className="format-toolbar__spacer" />
-        <button type="button" className="format-button" onClick={handleImportClick}>
-          <Upload size={16} />
-          <span>Import</span>
-        </button>
-        <button type="button" className="format-button" onClick={handleExport}>
-          <Download size={16} />
-          <span>Export</span>
-        </button>
-      </div>
-
-      <div className="doc-layout">
-        <div className="doc-wrapper">
-          <div className="suggestion-bar">
-            <div className="suggestion-bar__header">
-              <Sparkles size={16} />
-              <span>Smart suggestions</span>
-              <SupportLevelBadge level={supportLevel} />
+      <div className="workspace-grid">
+        <aside className="workspace-panel workspace-panel--left">
+          <div className="panel-block panel-block--word-bank">
+            <div className="panel-block__header">
+              <BookOpen size={18} />
+              <div>
+                <h2>Word bank</h2>
+                <p>Tap a word or phrase to add it to your document.</p>
+              </div>
             </div>
-            <div className="suggestion-bar__chips">
-              {suggestions.length ? (
-                suggestions.map((suggestion) => (
-                  <SuggestionChip
-                    key={`${suggestion}-${supportLevel}`}
-                    text={suggestion}
-                    onSelect={handleSuggestionSelect}
-                  />
+            <div className="word-bank-tabs">
+              {categoriesForLevel
+                .filter((category) => category.items.length > 0)
+                .map((category) => (
+                  <button
+                    key={category.id}
+                    type="button"
+                    className={`word-bank-tab ${activeCategory === category.id ? 'word-bank-tab--active' : ''}`}
+                    onClick={() => setActiveCategory(category.id)}
+                  >
+                    <span className="word-bank-tab__dot" style={{ backgroundColor: category.color }} />
+                    {category.label}
+                  </button>
+                ))}
+            </div>
+            <div className="word-bank-items">
+              {activeItems.length ? (
+                activeItems.map((item) => (
+                  <WordBankItem key={item.text} item={item} onInsert={handleWordInsert} />
                 ))
               ) : (
-                <span className="suggestion-empty">Type a word to see ideas appear here.</span>
+                <p className="word-bank-empty">No words at this support level yet. Try a different level.</p>
               )}
             </div>
           </div>
 
-          <div className="tts-controls">
-            <div className="tts-controls__summary">
-              <Volume2 size={22} />
-              <div>
-                <h3>Read aloud</h3>
-                <p>Hear your ideas in a natural UK English voice.</p>
-              </div>
-            </div>
-            {speechSupported ? (
-              <div className="tts-controls__actions">
-                {voiceOptions.length ? (
-                  <select
-                    className="tts-select"
-                    value={selectedVoice}
-                    onChange={(event) => setSelectedVoice(event.target.value)}
-                    aria-label="Choose a speaking voice"
-                  >
-                    {voiceOptions.map((voice) => (
-                      <option key={voice.name} value={voice.name}>
-                        {voice.label}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <span className="tts-voice-loading">Loading voices…</span>
-                )}
-                <div className="tts-controls__buttons">
-                  <button
-                    type="button"
-                    className="tts-button"
-                    onClick={handleSpeakDocument}
-                    disabled={!hasContent}
-                  >
-                    <PlayCircle size={20} />
-                    {speaking && !paused ? 'Restart' : 'Play'}
-                  </button>
-                  <button
-                    type="button"
-                    className="tts-button"
-                    onClick={handlePauseResume}
-                    disabled={!speaking}
-                  >
-                    {paused ? <PlayCircle size={20} /> : <PauseCircle size={20} />}
-                    {paused ? 'Resume' : 'Pause'}
-                  </button>
-                  <button
-                    type="button"
-                    className="tts-button"
-                    onClick={handleStopSpeech}
-                    disabled={!speaking}
-                  >
-                    <StopCircle size={20} />
-                    Stop
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <p className="tts-controls__unsupported">Speech synthesis is not available on this device.</p>
-            )}
-          </div>
-
-          <div className="doc-page-wrapper">
-            <div
-              ref={editorRef}
-              className="doc-page"
-              contentEditable
-              role="textbox"
-              aria-label="Document editor"
-              spellCheck
-              data-placeholder="Type your ideas here..."
-              onInput={handleEditorInput}
-              onKeyUp={updateCaretContext}
-              onMouseUp={updateCaretContext}
-              onFocus={handleEditorFocus}
-              suppressContentEditableWarning
-            />
-          </div>
-
-          <div className="doc-status-bar">
-            <span>{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
-            <span className="doc-status-bar__tip">{focusTip}</span>
-          </div>
-        </div>
-
-        <aside className="scaffold-panel">
-          <div className="scaffold-panel__header">
-            <BookOpen size={18} />
-            <div>
-              <h2>Word bank</h2>
-              <p>Tap a word or phrase to add it to your document.</p>
-            </div>
-          </div>
-
-          <div className="word-bank-tabs">
-            {categoriesForLevel
-              .filter((category) => category.items.length > 0)
-              .map((category) => (
-                <button
-                  key={category.id}
-                  type="button"
-                  className={`word-bank-tab ${activeCategory === category.id ? 'word-bank-tab--active' : ''}`}
-                  onClick={() => setActiveCategory(category.id)}
-                >
-                  <span className="word-bank-tab__dot" style={{ backgroundColor: category.color }} />
-                  {category.label}
-                </button>
-              ))}
-          </div>
-
-          <div className="word-bank-items">
-            {activeItems.length ? (
-              activeItems.map((item) => (
-                <WordBankItem key={item.text} item={item} onInsert={handleWordInsert} />
-              ))
-            ) : (
-              <p className="word-bank-empty">No words at this support level yet. Try a different level.</p>
-            )}
-          </div>
-
-          <div className="support-card">
+          <div className="panel-block panel-block--coach">
             <h3>Writing coach</h3>
             <p>{focusTip}</p>
             <ul>
@@ -709,9 +712,199 @@ const EALDocs = () => {
               <li>Remember to check punctuation at the end.</li>
             </ul>
           </div>
+        </aside>
 
-          <div className="insight-card">
-            <div className="insight-card__header">
+        <main className="workspace-center">
+          <header className="workspace-header">
+            <div className="workspace-header__identity">
+              <div className="app-logo">
+                <FileText size={20} />
+              </div>
+              <div className="doc-meta">
+                <input
+                  className="doc-title-input"
+                  value={docTitle}
+                  onChange={(event) => setDocTitle(event.target.value)}
+                  aria-label="Document title"
+                />
+                <nav className="doc-menu">
+                  <span>File</span>
+                  <span>Edit</span>
+                  <span>Insert</span>
+                  <span>Format</span>
+                  <span>Tools</span>
+                  <span>Help</span>
+                </nav>
+              </div>
+            </div>
+            <div className="workspace-header__controls">
+              <div className="support-selector">
+                <Languages size={16} />
+                <label htmlFor="support-level">Support level</label>
+                <select
+                  id="support-level"
+                  value={supportLevel}
+                  onChange={(event) => setSupportLevel(event.target.value)}
+                >
+                  <option value="beginner">Beginner</option>
+                  <option value="intermediate">Intermediate</option>
+                  <option value="advanced">Advanced</option>
+                </select>
+              </div>
+              <button type="button" className="share-button share-button--halo">
+                <Share2 size={16} />
+                Share support doc
+              </button>
+            </div>
+          </header>
+
+          <div className="workspace-orbit">
+            <div className="format-toolbar format-toolbar--encircle">
+              <div className="format-toolbar__cluster">
+                <ToolbarButton icon={Bold} label="Bold" onClick={() => applyCommand('bold')} />
+                <ToolbarButton icon={Italic} label="Italic" onClick={() => applyCommand('italic')} />
+                <ToolbarButton icon={Underline} label="Underline" onClick={() => applyCommand('underline')} />
+                <ToolbarButton
+                  icon={Highlighter}
+                  label="Highlight"
+                  onClick={() => applyCommand('hiliteColor', '#fff3b0')}
+                />
+              </div>
+              <div className="format-toolbar__cluster">
+                <ToolbarButton icon={AlignLeft} label="Align left" onClick={() => applyCommand('justifyLeft')} />
+                <ToolbarButton icon={AlignCenter} label="Align centre" onClick={() => applyCommand('justifyCenter')} />
+                <ToolbarButton icon={AlignJustify} label="Justify" onClick={() => applyCommand('justifyFull')} />
+                <ToolbarButton icon={List} label="Bullet list" onClick={() => applyCommand('insertUnorderedList')} />
+                <ToolbarButton icon={ListOrdered} label="Numbered list" onClick={() => applyCommand('insertOrderedList')} />
+              </div>
+              <div className="format-toolbar__cluster format-toolbar__cluster--actions">
+                <button type="button" className="format-button" onClick={handleImportClick}>
+                  <Upload size={16} />
+                  <span>Import</span>
+                </button>
+                <button type="button" className="format-button" onClick={handleExport}>
+                  <Download size={16} />
+                  <span>Export</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="editor-stack">
+              <div className="ghost-suggestions">
+                <div className="ghost-suggestions__header">
+                  <Sparkles size={16} />
+                  <span>Predictive ideas</span>
+                  <SupportLevelBadge level={supportLevel} />
+                </div>
+                <div className="ghost-suggestions__list">
+                  {suggestions.length ? (
+                    suggestions.map((suggestion) => (
+                      <SuggestionChip
+                        key={`${suggestion}-${supportLevel}`}
+                        text={suggestion}
+                        onSelect={handleSuggestionSelect}
+                      />
+                    ))
+                  ) : (
+                    <span className="suggestion-empty">Type a word to see ideas appear here.</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="editor-shell">
+                <div className="editor-shell__glow" />
+                <div className="writing-editor-wrapper">
+                  <div
+                    ref={editorRef}
+                    className="writing-editor"
+                    contentEditable
+                    role="textbox"
+                    aria-label="Document editor"
+                    spellCheck
+                    data-placeholder="Type your ideas here..."
+                    onInput={handleEditorInput}
+                    onKeyUp={updateCaretContext}
+                    onMouseUp={updateCaretContext}
+                    onFocus={handleEditorFocus}
+                    suppressContentEditableWarning
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="orbit-footer">
+              <div className="tts-controls tts-controls--orbit">
+                <div className="tts-controls__summary">
+                  <Volume2 size={22} />
+                  <div>
+                    <h3>Read aloud</h3>
+                    <p>Hear your ideas in a natural UK English voice.</p>
+                  </div>
+                </div>
+                {speechSupported ? (
+                  <div className="tts-controls__actions">
+                    {voiceOptions.length ? (
+                      <select
+                        className="tts-select"
+                        value={selectedVoice}
+                        onChange={(event) => setSelectedVoice(event.target.value)}
+                        aria-label="Choose a speaking voice"
+                      >
+                        {voiceOptions.map((voice) => (
+                          <option key={voice.name} value={voice.name}>
+                            {voice.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className="tts-voice-loading">Loading voices…</span>
+                    )}
+                    <div className="tts-controls__buttons">
+                      <button
+                        type="button"
+                        className="tts-button"
+                        onClick={handleSpeakDocument}
+                        disabled={!hasContent}
+                      >
+                        <PlayCircle size={20} />
+                        {speaking && !paused ? 'Restart' : 'Play'}
+                      </button>
+                      <button
+                        type="button"
+                        className="tts-button"
+                        onClick={handlePauseResume}
+                        disabled={!speaking}
+                      >
+                        {paused ? <PlayCircle size={20} /> : <PauseCircle size={20} />}
+                        {paused ? 'Resume' : 'Pause'}
+                      </button>
+                      <button
+                        type="button"
+                        className="tts-button"
+                        onClick={handleStopSpeech}
+                        disabled={!speaking}
+                      >
+                        <StopCircle size={20} />
+                        Stop
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="tts-controls__unsupported">Speech synthesis is not available on this device.</p>
+                )}
+              </div>
+
+              <div className="status-band">
+                <span className="status-band__count">{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
+                <span className="status-band__tip">{focusTip}</span>
+              </div>
+            </div>
+          </div>
+        </main>
+
+        <aside className="workspace-panel workspace-panel--right">
+          <div className="panel-block">
+            <div className="panel-block__header">
               <AlertTriangle size={18} />
               <div>
                 <h3>Spell check</h3>
@@ -754,8 +947,8 @@ const EALDocs = () => {
             )}
           </div>
 
-          <div className="insight-card">
-            <div className="insight-card__header">
+          <div className="panel-block">
+            <div className="panel-block__header">
               <Brain size={18} />
               <div>
                 <h3>Grammar goals</h3>
