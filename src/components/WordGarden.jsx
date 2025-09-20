@@ -9,7 +9,7 @@ import { AlertTriangle, Dot, Save, Volume2 } from 'lucide-react';
 // - Speech on click, Save to localStorage
 // - Invisible input captures typing
 
-const DICTIONARY = [
+const FALLBACK_DICTIONARY = [
   'cat','catch','caterpillar','castle','car','card','care','careful',
   'dog','door','down','draw','dream','drift','dragon','drop',
   'apple','apricot','astronaut','ask','asleep','after','again',
@@ -62,22 +62,93 @@ function tokensToText(list) {
   }, '');
 }
 
-async function predictNext(context, currentWord) {
-  await new Promise((resolve) => setTimeout(resolve, 120));
+const SUGGESTION_ENDPOINT = 'https://api.datamuse.com/words';
 
-  const prefix = currentWord.toLowerCase();
-  let candidates = DICTIONARY.filter((word) => word.startsWith(prefix));
+function sanitiseWords(words) {
+  const seen = new Set();
+  const result = [];
+  words.forEach((word) => {
+    const trimmed = word?.trim().toLowerCase();
+    if (!trimmed) return;
+    if (!/^[a-z'-]+$/i.test(trimmed)) return;
+    if (seen.has(trimmed)) return;
+    seen.add(trimmed);
+    result.push(trimmed);
+  });
+  return result;
+}
 
-  if (prefix.length === 0) {
-    const tokens = context.trim().split(/\s+/).filter(Boolean);
-    const last = tokens.at(-1) ?? '';
-    candidates = last
-      ? DICTIONARY.filter((word) => word.startsWith(last[0]))
-      : pickRandom(DICTIONARY, 10);
+async function fetchWordBank(params, signal) {
+  if (typeof fetch !== 'function') {
+    throw new Error('Fetch API is not available in this environment.');
   }
 
-  const pool = candidates.length ? candidates : pickRandom(DICTIONARY, 10);
-  return { words: pool.slice(0, 3), punctuation: PUNCT };
+  const url = new URL(SUGGESTION_ENDPOINT);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value != null && value !== '') {
+      url.searchParams.set(key, value);
+    }
+  });
+
+  const response = await fetch(url.toString(), {
+    headers: { Accept: 'application/json' },
+    signal
+  });
+
+  if (!response.ok) {
+    throw new Error(`Word service error: ${response.status}`);
+  }
+
+  const payload = await response.json();
+  return sanitiseWords(payload.map((item) => item.word));
+}
+
+async function predictNext(context, currentWord, signal) {
+  await new Promise((resolve) => setTimeout(resolve, 120));
+
+  const prefix = currentWord.trim().toLowerCase();
+  const safePrefix = prefix.replace(/[^a-z'-]/gi, '');
+  const tokens = context.trim().split(/\s+/).filter(Boolean);
+  const lastRaw = tokens.at(-1) ?? '';
+  const safeLast = lastRaw.replace(/[^a-z'-]/gi, '');
+
+  const collected = new Set();
+  const pushWords = (list) => {
+    list.forEach((word) => {
+      if (!collected.has(word)) {
+        collected.add(word);
+      }
+    });
+  };
+
+  try {
+    if (safePrefix) {
+      const prefixMatches = await fetchWordBank({ sp: `${safePrefix}*`, max: 20 }, signal);
+      pushWords(prefixMatches);
+    }
+
+    if (!collected.size && safeLast) {
+      const contextMatches = await fetchWordBank({ lc: safeLast.toLowerCase(), max: 20 }, signal);
+      pushWords(contextMatches);
+    }
+
+    if (!collected.size) {
+      const topicMatches = await fetchWordBank({ topics: 'story,adventure', max: 20 }, signal);
+      pushWords(topicMatches);
+    }
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw error;
+    }
+    console.warn('Falling back to local word list – unable to reach suggestion service.', error);
+  }
+
+  if (!collected.size) {
+    pushWords(pickRandom(FALLBACK_DICTIONARY, 10).map((word) => word.toLowerCase()));
+  }
+
+  const words = Array.from(collected).slice(0, 3);
+  return { words, punctuation: PUNCT };
 }
 
 function randomGradientStep() {
@@ -115,8 +186,13 @@ export default function WordGarden() {
   useEffect(() => {
     const prefix = current.trim().toLowerCase();
     if (prefix.length >= 3) {
-      const exists = DICTIONARY.some((word) => word.startsWith(prefix));
-      setErrorFlag(!exists);
+      const safePrefix = prefix.replace(/[^a-z'-]/gi, '');
+      if (safePrefix.length >= 3) {
+        const exists = FALLBACK_DICTIONARY.some((word) => word.startsWith(safePrefix));
+        setErrorFlag(!exists);
+      } else {
+        setErrorFlag(false);
+      }
     } else {
       setErrorFlag(false);
     }
@@ -125,12 +201,23 @@ export default function WordGarden() {
   // predictions
   useEffect(() => {
     let alive = true;
-    predictNext(contextBefore, current).then((result) => {
-      if (!alive) return;
-      setSuggestions(result.words);
-      setPunctuation(result.punctuation);
-    });
-    return () => { alive = false; };
+    const controller = new AbortController();
+
+    predictNext(contextBefore, current, controller.signal)
+      .then((result) => {
+        if (!alive) return;
+        setSuggestions(result.words);
+        setPunctuation(result.punctuation);
+      })
+      .catch((error) => {
+        if (error.name === 'AbortError' || !alive) return;
+        console.warn('Unable to load new suggestions', error);
+      });
+
+    return () => {
+      alive = false;
+      controller.abort();
+    };
   }, [contextBefore, current]);
 
   // focus hidden input
@@ -154,17 +241,17 @@ export default function WordGarden() {
 
   const ranked = suggestions.slice(0, 3);
 
-  // background style
-  const backgroundStyle = useMemo(
-    () => ({ backgroundImage: GRADIENTS[bgIndex % GRADIENTS.length] }),
-    [bgIndex]
-  );
-
   function syncInput(value) {
     if (inputRef.current) {
       inputRef.current.value = value;
       inputRef.current.focus();
-      try { inputRef.current.setSelectionRange(value.length, value.length); } catch {}
+      try {
+        inputRef.current.setSelectionRange(value.length, value.length);
+      } catch (error) {
+        if (import.meta.env.DEV) {
+          console.debug('Unable to set selection range on hidden input.', error);
+        }
+      }
     }
     setCurrent(value);
   }
@@ -289,6 +376,7 @@ export default function WordGarden() {
 
   function handleTokenClick(index) {
     setActiveToken(index);
+    setCursor({ type: 'insert', index: index + 1 });
     inputRef.current?.focus();
   }
   function beginReplace(index) {
@@ -365,7 +453,13 @@ export default function WordGarden() {
         <div className="max-w-5xl text-center text-white/95 drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)]">
           <div className="flex flex-wrap items-center justify-center gap-y-2 text-2xl leading-relaxed md:text-3xl">
             {showPlaceholder ? (
-              <span className="mx-2 rounded-xl bg-white/10 px-3 py-1 text-white/70">{PLACEHOLDER_ROOT}</span>
+              <button
+                type="button"
+                onClick={continueAtEnd}
+                className="mx-2 rounded-xl bg-white/10 px-3 py-1 text-white/70 transition hover:bg-white/20 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+              >
+                {PLACEHOLDER_ROOT}
+              </button>
             ) : null}
 
             {tokens.map((token, index) => {
