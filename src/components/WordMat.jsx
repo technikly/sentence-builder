@@ -28,7 +28,11 @@ const WordMat = ({ open, onClose, vocabulary, onWordClick }) => {
               {vocabulary[cat].map((word, idx) => (
                 <button
                   key={idx}
-                  onClick={() => onWordClick(word)}
+                  type="button"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    onWordClick(word);
+                  }}
                   className={`text-white px-2 py-1 rounded ${
                     wordClassBackgroundColours[cat.slice(0, -1)] || 'bg-gray-300'
                   }`}

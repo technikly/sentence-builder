@@ -80,6 +80,7 @@ const SentenceBuilder = () => {
   });
 
   const [typingPosition, setTypingPosition] = useState(null);
+  const typingPositionRef = useRef(null);
   const suppressNextCancelRef = useRef(false);
   const [showWordMat, setShowWordMat] = useState(false);
 
@@ -311,7 +312,9 @@ const SentenceBuilder = () => {
    */
   const startTyping = (sentenceIndex, wordIndex) => {
     playSound('select');
-    setTypingPosition({ sentenceIndex, wordIndex });
+    const position = { sentenceIndex, wordIndex };
+    setTypingPosition(position);
+    typingPositionRef.current = position;
   };
 
   const cancelTyping = useCallback(() => {
@@ -319,12 +322,14 @@ const SentenceBuilder = () => {
       return;
     }
     setTypingPosition(null);
+    typingPositionRef.current = null;
   }, []);
 
   const insertWord = async (word) => {
-    if (!typingPosition) return;
+    const position = typingPosition ?? typingPositionRef.current;
+    if (!position) return;
     suppressNextCancelRef.current = true;
-    const { sentenceIndex, wordIndex } = typingPosition;
+    const { sentenceIndex, wordIndex } = position;
 
     let type = checkWordInVocabDB(word);
     if (type === 'unknown') {
@@ -337,7 +342,9 @@ const SentenceBuilder = () => {
     const newWord = { word, type, punctuation: '' };
     newSentences[sentenceIndex].words.splice(wordIndex, 0, newWord);
     setSentences(newSentences);
-    setTypingPosition({ sentenceIndex, wordIndex: wordIndex + 1 });
+    const nextPosition = { sentenceIndex, wordIndex: wordIndex + 1 };
+    setTypingPosition(nextPosition);
+    typingPositionRef.current = nextPosition;
     playSound('select');
     setTimeout(() => {
       suppressNextCancelRef.current = false;
