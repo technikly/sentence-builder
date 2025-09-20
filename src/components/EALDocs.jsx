@@ -1,39 +1,38 @@
 import PropTypes from 'prop-types';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   AlignCenter,
   AlignJustify,
   AlignLeft,
   Bold,
   BookOpen,
+  CheckCircle2,
   Download,
   FileText,
   Highlighter,
   Italic,
   Languages,
+  Lightbulb,
   List,
   ListOrdered,
   Share2,
   Sparkles,
   Underline,
-  Upload
+  Upload,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
+import nlp from 'compromise';
 
+import { filterItemsByLevel, flattenWordBank, levelRank, wordBankCategories } from '../data/ealWordBank';
+import { grammarAppendixStrands } from '../data/ukGrammarAppendix';
 import {
-  determiners,
-  filterItemsByLevel,
-  flattenWordBank,
-  highFrequencyWords,
-  levelRank,
-  linkingVerbs,
-  modalHelpers,
-  pronounFriendlyVerbs,
-  pronouns,
-  questionOpeners,
-  supportiveSentenceFrames,
-  timeMarkers,
-  wordBankCategories
-} from '../data/ealWordBank';
+  initializeSpellChecker,
+  checkSpelling,
+  getSuggestions
+} from '../spellChecker.js';
+import { buildPredictiveSuggestions } from '../utils/predictiveSuggestions';
 
 const ToolbarButton = ({ icon: Icon, label, onClick }) => (
   <button type="button" className="format-button" onClick={onClick} aria-label={label} title={label}>
@@ -41,9 +40,17 @@ const ToolbarButton = ({ icon: Icon, label, onClick }) => (
   </button>
 );
 
-const SuggestionChip = ({ text, onSelect }) => (
-  <button type="button" className="suggestion-chip" onClick={() => onSelect(text)}>
-    {text}
+const SuggestionChip = ({ suggestion, onSelect }) => (
+  <button
+    type="button"
+    className="suggestion-chip"
+    onClick={() => onSelect(suggestion.text)}
+    title={suggestion.hint ?? suggestion.text}
+  >
+    <span className="suggestion-chip__text">{suggestion.text}</span>
+    {suggestion.hint ? (
+      <span className="suggestion-chip__hint">{suggestion.hint}</span>
+    ) : null}
   </button>
 );
 
@@ -71,7 +78,10 @@ ToolbarButton.propTypes = {
 };
 
 SuggestionChip.propTypes = {
-  text: PropTypes.string.isRequired,
+  suggestion: PropTypes.shape({
+    text: PropTypes.string.isRequired,
+    hint: PropTypes.string
+  }).isRequired,
   onSelect: PropTypes.func.isRequired
 };
 
@@ -89,8 +99,6 @@ SupportLevelBadge.propTypes = {
 };
 
 const getLevelRank = (level) => levelRank[level] ?? 0;
-
-const normaliseText = (text) => text?.toLowerCase().trim() ?? '';
 
 const ensureEditorFocus = (editor) => {
   if (editor && document.activeElement !== editor) {
@@ -112,6 +120,13 @@ const EALDocs = () => {
     previousWord: '',
     textBeforeCaret: ''
   });
+  const [spellReady, setSpellReady] = useState(false);
+  const [misspellings, setMisspellings] = useState([]);
+  const [grammarHighlights, setGrammarHighlights] = useState([]);
+  const speechUtteranceRef = useRef(null);
+  const [isSpeechSupported, setIsSpeechSupported] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [preferredVoice, setPreferredVoice] = useState(null);
 
   const categoriesForLevel = useMemo(
     () =>
@@ -140,10 +155,140 @@ const EALDocs = () => {
     }
   }, [activeCategory, categoriesForLevel]);
 
+  useEffect(() => {
+    let isMounted = true;
+    initializeSpellChecker()
+      .then(() => {
+        if (isMounted) {
+          setSpellReady(true);
+        }
+      })
+      .catch((error) => {
+        console.error('Spell checker failed to load', error);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    const synthesis = window.speechSynthesis;
+    if (!synthesis) {
+      return;
+    }
+    setIsSpeechSupported(true);
+
+    const updateVoices = () => {
+      const voices = synthesis.getVoices();
+      if (!voices.length) {
+        return;
+      }
+      setPreferredVoice((currentVoice) => {
+        if (currentVoice) {
+          const stillAvailable = voices.find((voice) => voice.name === currentVoice.name);
+          if (stillAvailable) {
+            return stillAvailable;
+          }
+        }
+        const britishVoice = voices.find((voice) => voice.lang?.toLowerCase().includes('en-gb'));
+        return britishVoice ?? voices[0];
+      });
+    };
+
+    updateVoices();
+    synthesis.addEventListener('voiceschanged', updateVoices);
+    return () => {
+      synthesis.removeEventListener('voiceschanged', updateVoices);
+    };
+  }, []);
+
   const uniqueWordList = useMemo(
     () => flattenWordBank(wordBankCategories, supportLevel),
     [supportLevel]
   );
+
+  useEffect(() => {
+    if (!spellReady) {
+      setMisspellings([]);
+      return;
+    }
+
+    const trimmed = plainText.trim();
+    if (!trimmed) {
+      setMisspellings([]);
+      return;
+    }
+
+    const wordMatches = trimmed.match(/\b[\p{L}'-]+\b/gu) ?? [];
+    const uniqueWords = [];
+    const seen = new Set();
+    wordMatches.forEach((word) => {
+      const lower = word.toLowerCase();
+      if (seen.has(lower)) {
+        return;
+      }
+      seen.add(lower);
+      uniqueWords.push({ original: word, lower });
+    });
+    const flagged = [];
+    for (const { original, lower } of uniqueWords) {
+      if (lower.length < 2) {
+        continue;
+      }
+      if (!checkSpelling(lower)) {
+        flagged.push({
+          word: original,
+          normalized: lower,
+          suggestions: getSuggestions(lower).slice(0, 3)
+        });
+      }
+      if (flagged.length >= 10) {
+        break;
+      }
+    }
+    setMisspellings(flagged);
+  }, [plainText, spellReady]);
+
+  useEffect(() => {
+    const trimmed = plainText.trim();
+    if (!trimmed) {
+      const initial = grammarAppendixStrands.slice(0, 4).map((strand) => ({
+        id: strand.id,
+        label: strand.label,
+        status: 'prompt',
+        message: strand.prompt,
+        curriculumNote: strand.curriculumNote
+      }));
+      setGrammarHighlights(initial);
+      return;
+    }
+
+    const doc = nlp(trimmed);
+    const sentences = doc.sentences().json();
+    const lastSentence = sentences[sentences.length - 1];
+    const tagSet = new Set();
+    (lastSentence?.terms ?? []).forEach((term) => {
+      (term.tags ?? []).forEach((tag) => tagSet.add(tag));
+    });
+
+    const highlightItems = grammarAppendixStrands.map((strand) => {
+      const hasStrand = strand.tags.some((tag) => tagSet.has(tag));
+      return {
+        id: strand.id,
+        label: strand.label,
+        status: hasStrand ? 'celebrate' : 'prompt',
+        message: hasStrand ? strand.success : strand.prompt,
+        curriculumNote: strand.curriculumNote
+      };
+    });
+
+    const prompts = highlightItems.filter((item) => item.status === 'prompt').slice(0, 3);
+    const celebrates = highlightItems.filter((item) => item.status === 'celebrate').slice(0, 2);
+    setGrammarHighlights([...prompts, ...celebrates]);
+  }, [plainText]);
 
   const updateCaretContext = useCallback(() => {
     const editor = editorRef.current;
@@ -271,51 +416,16 @@ const EALDocs = () => {
     URL.revokeObjectURL(url);
   }, [docTitle]);
 
-  const suggestions = useMemo(() => {
-    const results = [];
-    const prefix = normaliseText(caretContext.prefix);
-    const previous = normaliseText(caretContext.previousWord);
-    const textBefore = caretContext.textBeforeCaret.trim();
-
-    if (prefix) {
-      const matches = uniqueWordList.filter((word) => {
-        const lower = normaliseText(word);
-        return lower.startsWith(prefix) && lower !== prefix;
-      });
-      results.push(...matches.slice(0, 5));
-    }
-
-    const isNewSentence = !textBefore || /[.!?]\s*$/.test(textBefore);
-    let contextualPool = [];
-
-    if (isNewSentence) {
-      contextualPool = supportiveSentenceFrames;
-    } else if (pronouns.includes(previous)) {
-      contextualPool = pronounFriendlyVerbs;
-    } else if (determiners.includes(previous)) {
-      contextualPool = categoryLookup.get('descriptions')?.items.map((item) => item.text) ?? [];
-      contextualPool = contextualPool.concat(categoryLookup.get('people')?.items.map((item) => item.text) ?? []);
-    } else if (linkingVerbs.includes(previous)) {
-      contextualPool = categoryLookup.get('descriptions')?.items.map((item) => item.text) ?? [];
-    } else if (questionOpeners.includes(previous)) {
-      contextualPool = categoryLookup.get('people')?.items.map((item) => item.text) ?? [];
-    } else if (timeMarkers.includes(previous)) {
-      contextualPool = categoryLookup.get('actions')?.items.map((item) => item.text) ?? [];
-    } else if (modalHelpers.includes(previous)) {
-      contextualPool = categoryLookup.get('actions')?.items.map((item) => item.text) ?? [];
-    } else {
-      contextualPool = highFrequencyWords;
-    }
-
-    contextualPool.forEach((item) => {
-      const word = typeof item === 'string' ? item : item.text;
-      if (!results.find((existing) => existing.toLowerCase() === word.toLowerCase())) {
-        results.push(word);
-      }
-    });
-
-    return results.slice(0, 6);
-  }, [caretContext, categoryLookup, uniqueWordList]);
+  const suggestions = useMemo(
+    () =>
+      buildPredictiveSuggestions({
+        caretContext,
+        categoryLookup,
+        uniqueWordList,
+        misspellings
+      }),
+    [caretContext, categoryLookup, uniqueWordList, misspellings]
+  );
 
   const handleSuggestionSelect = useCallback(
     (suggestion) => {
@@ -363,6 +473,76 @@ const EALDocs = () => {
     updateCaretContext();
   }, [updateCaretContext]);
 
+  useEffect(
+    () => () => {
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    },
+    []
+  );
+
+  const speakText = useCallback(
+    (text) => {
+      if (!isSpeechSupported || typeof window === 'undefined') {
+        return;
+      }
+      const synthesis = window.speechSynthesis;
+      if (!synthesis || !text.trim()) {
+        return;
+      }
+      synthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      if (preferredVoice) {
+        utterance.voice = preferredVoice;
+      }
+      utterance.rate = 0.9;
+      utterance.pitch = 1;
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        speechUtteranceRef.current = null;
+      };
+      utterance.onerror = () => {
+        setIsSpeaking(false);
+        speechUtteranceRef.current = null;
+      };
+      speechUtteranceRef.current = utterance;
+      setIsSpeaking(true);
+      synthesis.speak(utterance);
+    },
+    [isSpeechSupported, preferredVoice]
+  );
+
+  const speakLatestSentence = useCallback(() => {
+    if (!plainText.trim()) {
+      return;
+    }
+    const doc = nlp(plainText);
+    const sentences = doc.sentences().json();
+    const lastSentence = sentences[sentences.length - 1]?.text ?? plainText;
+    speakText(lastSentence);
+  }, [plainText, speakText]);
+
+  const speakWholeDocument = useCallback(() => {
+    if (!plainText.trim()) {
+      return;
+    }
+    speakText(plainText);
+  }, [plainText, speakText]);
+
+  const stopSpeaking = useCallback(() => {
+    if (!isSpeechSupported || typeof window === 'undefined') {
+      return;
+    }
+    const synthesis = window.speechSynthesis;
+    if (!synthesis) {
+      return;
+    }
+    synthesis.cancel();
+    speechUtteranceRef.current = null;
+    setIsSpeaking(false);
+  }, [isSpeechSupported]);
+
   useEffect(() => {
     const trimmed = plainText.trim();
     if (!trimmed) {
@@ -372,22 +552,28 @@ const EALDocs = () => {
 
     const wordTotal = trimmed.split(/\s+/).length;
     if (wordTotal < 5) {
-      setFocusTip('Can you add a describing word to give more detail?');
+      setFocusTip('Build a noun phrase with an adjective, as the grammar appendix suggests.');
       return;
     }
 
     if (!/[.!?]$/.test(trimmed)) {
-      setFocusTip('Finish the sentence with a full stop, question mark, or exclamation mark.');
+      setFocusTip('Finish the idea with sentence punctuation – a full stop, question mark or exclamation mark.');
+      return;
+    }
+
+    const promptHighlight = grammarHighlights.find((item) => item.status === 'prompt');
+    if (promptHighlight) {
+      setFocusTip(promptHighlight.message);
       return;
     }
 
     if (getLevelRank(supportLevel) >= levelRank.intermediate) {
-      setFocusTip('Try adding a connector like "because" or "after that" to join ideas.');
+      setFocusTip('Stretch yourself with a subordinating conjunction like "because" or "although".');
       return;
     }
 
     setFocusTip('Great writing! Could you add how the person feels?');
-  }, [plainText, supportLevel]);
+  }, [plainText, supportLevel, grammarHighlights]);
 
   const activeCategoryData = categoryLookup.get(activeCategory);
   const activeItems = activeCategoryData?.items ?? [];
@@ -470,29 +656,96 @@ const EALDocs = () => {
       <div className="doc-layout">
         <div className="doc-wrapper">
           <div className="suggestion-bar">
-            <div className="suggestion-bar__header">
-              <Sparkles size={16} />
-              <span>Smart suggestions</span>
-              <SupportLevelBadge level={supportLevel} />
-            </div>
-            <div className="suggestion-bar__chips">
-              {suggestions.length ? (
-                suggestions.map((suggestion) => (
-                  <SuggestionChip
-                    key={`${suggestion}-${supportLevel}`}
-                    text={suggestion}
+          <div className="suggestion-bar__header">
+            <Sparkles size={16} />
+            <span>Smart suggestions</span>
+            <SupportLevelBadge level={supportLevel} />
+          </div>
+          <div className="suggestion-bar__chips">
+            {suggestions.length ? (
+              suggestions.map((suggestion) => (
+                <SuggestionChip
+                    key={`${suggestion.text}-${supportLevel}`}
+                    suggestion={suggestion}
                     onSelect={handleSuggestionSelect}
                   />
                 ))
               ) : (
                 <span className="suggestion-empty">Type a word to see ideas appear here.</span>
               )}
+          </div>
+          <div className="support-panels">
+            <div className="support-panel-card">
+              <div className="support-panel-card__header">
+                <AlertTriangle size={18} />
+                <div>
+                  <span className="support-panel-card__title">Spell check</span>
+                  <small>UK dictionary with child-friendly filtering.</small>
+                </div>
+              </div>
+              {spellReady ? (
+                misspellings.length ? (
+                  <ul className="support-panel-card__list">
+                    {misspellings.map((item) => (
+                      <li key={item.word} className="support-panel-card__list-item">
+                        <span className="support-panel-card__term">{item.word}</span>
+                        {item.suggestions.length ? (
+                          <span className="support-panel-card__suggestions">
+                            Try: {item.suggestions.join(', ')}
+                          </span>
+                        ) : (
+                          <span className="support-panel-card__suggestions">Check this spelling carefully.</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="support-panel-card__celebration">
+                    <CheckCircle2 size={18} />
+                    <span>No spelling issues flagged.</span>
+                  </div>
+                )
+              ) : (
+                <p className="support-panel-card__loading">Loading UK dictionary…</p>
+              )}
+            </div>
+            <div className="support-panel-card support-panel-card--grammar">
+              <div className="support-panel-card__header">
+                <Lightbulb size={18} />
+                <div>
+                  <span className="support-panel-card__title">Grammar focus</span>
+                  <small>Aligned with the UK grammar appendix.</small>
+                </div>
+              </div>
+              {grammarHighlights.length ? (
+                <ul className="support-panel-card__list support-panel-card__list--grammar">
+                  {grammarHighlights.map((item) => (
+                    <li
+                      key={item.id}
+                      className={`grammar-highlight grammar-highlight--${item.status}`}
+                    >
+                      {item.status === 'celebrate' ? (
+                        <CheckCircle2 size={16} />
+                      ) : (
+                        <Lightbulb size={16} />
+                      )}
+                      <div>
+                        <span className="grammar-highlight__label">{item.label}</span>
+                        <span className="grammar-highlight__message">{item.message}</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="support-panel-card__loading">Start typing to unlock grammar guidance.</p>
+              )}
             </div>
           </div>
+        </div>
 
-          <div className="doc-page-wrapper">
-            <div
-              ref={editorRef}
+        <div className="doc-page-wrapper">
+          <div
+            ref={editorRef}
               className="doc-page"
               contentEditable
               role="textbox"
@@ -508,8 +761,35 @@ const EALDocs = () => {
           </div>
 
           <div className="doc-status-bar">
-            <span>{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
-            <span className="doc-status-bar__tip">{focusTip}</span>
+            <div className="doc-status-bar__meta">
+              <span className="doc-status-bar__count">{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
+              <span className="doc-status-bar__tip">{focusTip}</span>
+            </div>
+            <div className="tts-controls">
+              {isSpeechSupported ? (
+                <>
+                  <button type="button" className="tts-button" onClick={speakLatestSentence}>
+                    <Volume2 size={16} />
+                    Read sentence
+                  </button>
+                  <button type="button" className="tts-button tts-button--secondary" onClick={speakWholeDocument}>
+                    <Volume2 size={16} />
+                    Read document
+                  </button>
+                  {isSpeaking ? (
+                    <button type="button" className="tts-button tts-button--stop" onClick={stopSpeaking}>
+                      <VolumeX size={16} />
+                      Stop
+                    </button>
+                  ) : null}
+                  {preferredVoice ? (
+                    <span className="tts-voice">Voice: {preferredVoice.name}</span>
+                  ) : null}
+                </>
+              ) : (
+                <span className="tts-unavailable">Text-to-speech is not available in this browser.</span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -549,12 +829,14 @@ const EALDocs = () => {
           </div>
 
           <div className="support-card">
-            <h3>Writing coach</h3>
-            <p>{focusTip}</p>
-            <ul>
-              <li>Use the connectors tab to join short sentences.</li>
-              <li>Try saying your sentence aloud before writing it.</li>
-              <li>Remember to check punctuation at the end.</li>
+            <h3>Curriculum writing coach</h3>
+            <p className="support-card__focus">{focusTip}</p>
+            <ul className="curriculum-list">
+              {grammarHighlights.slice(0, 3).map((item) => (
+                <li key={item.id}>
+                  <strong>{item.label}:</strong> {item.curriculumNote}
+                </li>
+              ))}
             </ul>
           </div>
         </aside>
