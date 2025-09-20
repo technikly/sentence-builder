@@ -428,11 +428,9 @@ const SentenceBuilder = () => {
   };
 
   // Closes context menu on outside click
-  const closeContextMenu = () => {
-    if (contextMenu.visible) {
-      setContextMenu({ ...contextMenu, visible: false });
-    }
-  };
+  const closeContextMenu = useCallback(() => {
+    setContextMenu((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+  }, []);
 
   // Hide context menu on scroll or window resize
   useEffect(() => {
@@ -443,7 +441,7 @@ const SentenceBuilder = () => {
       window.removeEventListener('scroll', handleScrollOrResize);
       window.removeEventListener('resize', handleScrollOrResize);
     };
-  }, [contextMenu.visible]);
+  }, [closeContextMenu]);
 
   // Hide context menu on any window click
   useEffect(() => {
@@ -451,7 +449,7 @@ const SentenceBuilder = () => {
     return () => {
       window.removeEventListener('click', closeContextMenu);
     };
-  }, []);
+  }, [closeContextMenu]);
 
   /**
    * ---------------------------
