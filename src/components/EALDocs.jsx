@@ -7,15 +7,10 @@ import {
   AlertTriangle,
   Bold,
   BookOpen,
-  Brain,
-  CheckCircle2,
   Download,
-  FileText,
   Highlighter,
   Italic,
-  Languages,
-  List,
-  ListOrdered,
+  Loader2,
   PauseCircle,
   PlayCircle,
   Share2,
@@ -26,69 +21,64 @@ import {
   Volume2
 } from 'lucide-react';
 
-import { filterItemsByLevel, flattenWordBank, levelRank, wordBankCategories } from '../data/ealWordBank';
-import { useSpeechSynthesis } from '../hooks/useSpeechSynthesis';
-import { analyseSpelling } from '../utils/spellingInsights';
+import { filterItemsByLevel, wordBankCategories } from '../data/ealWordBank';
 import { evaluateGrammarAgainstCurriculum } from '../utils/grammarInsights';
-import { generatePredictiveSuggestions } from '../utils/predictiveSuggestions';
-import { initializeSpellChecker } from '../spellChecker';
 
-const ToolbarButton = ({ icon: Icon, label, onClick }) => (
-  <button type="button" className="format-button" onClick={onClick} aria-label={label} title={label}>
-    <Icon size={16} />
-  </button>
-);
-
-const SuggestionChip = ({ text, onSelect }) => (
-  <button type="button" className="suggestion-chip" onClick={() => onSelect(text)}>
-    {text}
-  </button>
-);
-
-const WordBankItem = ({ item, onInsert }) => (
-  <button type="button" className="word-bank-item" onClick={() => onInsert(item)}>
-    <span className="word-bank-item__text">{item.text}</span>
-    {item.hint ? <span className="word-bank-item__hint">{item.hint}</span> : null}
-  </button>
-);
-
-const SupportLevelBadge = ({ level }) => {
-  const levelLabels = {
-    beginner: 'Beginner',
-    intermediate: 'Intermediate',
-    advanced: 'Advanced'
-  };
-
-  return <span className={`support-badge support-badge--${level}`}>{levelLabels[level]}</span>;
+const WORD_CLASS_COLORS = {
+  noun: '#2563eb',
+  verb: '#16a34a',
+  adjective: '#d97706',
+  adverb: '#9333ea',
+  pronoun: '#ec4899',
+  determiner: '#0ea5e9',
+  preposition: '#0d9488',
+  conjunction: '#f97316',
+  interjection: '#facc15',
+  punctuation: '#64748b',
+  other: '#475569'
 };
 
-ToolbarButton.propTypes = {
-  icon: PropTypes.elementType.isRequired,
-  label: PropTypes.string.isRequired,
-  onClick: PropTypes.func.isRequired
+const WORD_CLASS_LABELS = {
+  noun: 'Noun',
+  verb: 'Verb',
+  adjective: 'Adjective',
+  adverb: 'Adverb',
+  pronoun: 'Pronoun',
+  determiner: 'Determiner',
+  preposition: 'Preposition',
+  conjunction: 'Conjunction',
+  interjection: 'Interjection',
+  punctuation: 'Punctuation',
+  other: 'Other'
 };
 
-SuggestionChip.propTypes = {
-  text: PropTypes.string.isRequired,
-  onSelect: PropTypes.func.isRequired
+const EMPTY_ANALYSIS = {
+  signature: '',
+  suggestions: [],
+  word_classes: [],
+  spelling: []
 };
 
-WordBankItem.propTypes = {
-  item: PropTypes.shape({
-    text: PropTypes.string.isRequired,
-    hint: PropTypes.string,
-    level: PropTypes.string
-  }).isRequired,
-  onInsert: PropTypes.func.isRequired
+const WORD_REGEX = /[\p{L}'’-]+/gu;
+
+const escapeHtml = (value = '') =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+
+const extractTokens = (text = '') => {
+  const tokens = [];
+  let match;
+  while ((match = WORD_REGEX.exec(text)) !== null) {
+    tokens.push({ text: match[0], start: match.index, end: match.index + match[0].length });
+  }
+  return tokens;
 };
 
-SupportLevelBadge.propTypes = {
-  level: PropTypes.oneOf(['beginner', 'intermediate', 'advanced']).isRequired
-};
-
-const getLevelRank = (level) => levelRank[level] ?? 0;
-
-const escapeRegExp = (value) => value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+const computeSignature = (tokens) => tokens.map((token) => `${token.start}:${token.text.toLowerCase()}`).join('|');
 
 const ensureEditorFocus = (editor) => {
   if (editor && document.activeElement !== editor) {
@@ -96,36 +86,252 @@ const ensureEditorFocus = (editor) => {
   }
 };
 
+const getCaretOffset = (root) => {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.startContainer)) {
+    return null;
+  }
+  const preRange = range.cloneRange();
+  preRange.selectNodeContents(root);
+  preRange.setEnd(range.startContainer, range.startOffset);
+  return preRange.toString().length;
+};
+
+const restoreCaretOffset = (root, offset) => {
+  if (offset == null) {
+    return;
+  }
+  const selection = window.getSelection();
+  if (!selection) {
+    return;
+  }
+  selection.removeAllRanges();
+  const range = document.createRange();
+  let remaining = offset;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let currentNode = walker.nextNode();
+  while (currentNode) {
+    const length = currentNode.textContent.length;
+    if (remaining <= length) {
+      range.setStart(currentNode, remaining);
+      range.collapse(true);
+      selection.addRange(range);
+      return;
+    }
+    remaining -= length;
+    currentNode = walker.nextNode();
+  }
+  range.selectNodeContents(root);
+  range.collapse(false);
+  selection.addRange(range);
+};
+
+const ToolbarButton = ({ icon: Icon, label, onClick }) => (
+  <button type="button" className="studio-button" onClick={onClick} aria-label={label} title={label}>
+    <Icon size={18} />
+  </button>
+);
+
+ToolbarButton.propTypes = {
+  icon: PropTypes.elementType.isRequired,
+  label: PropTypes.string.isRequired,
+  onClick: PropTypes.func.isRequired
+};
+
+const WordBankItem = ({ item, onInsert }) => (
+  <button type="button" className="studio-word" onClick={() => onInsert(item)}>
+    <span>{item.text}</span>
+    {item.hint ? <small>{item.hint}</small> : null}
+  </button>
+);
+
+WordBankItem.propTypes = {
+  item: PropTypes.shape({
+    text: PropTypes.string.isRequired,
+    hint: PropTypes.string
+  }).isRequired,
+  onInsert: PropTypes.func.isRequired
+};
+
+const ClassLegend = ({ usedClasses }) => (
+  <div className="studio-legend">
+    {usedClasses.map((className) => (
+      <div key={className} className="legend-chip">
+        <span className="legend-dot" style={{ backgroundColor: WORD_CLASS_COLORS[className] }} />
+        {WORD_CLASS_LABELS[className]}
+      </div>
+    ))}
+  </div>
+);
+
+ClassLegend.propTypes = {
+  usedClasses: PropTypes.arrayOf(PropTypes.string).isRequired
+};
+
+const SpellIssueList = ({ issues, tokens, onApply }) => (
+  <div className="panel-card">
+    <div className="panel-card__header">
+      <AlertTriangle size={18} />
+      <div>
+        <h3>Spelling watch</h3>
+        <p>Tap a fix to update your writing.</p>
+      </div>
+    </div>
+    {issues.length === 0 ? (
+      <p className="panel-card__empty">Everything looks great so far!</p>
+    ) : (
+      <ul className="issue-list">
+        {issues.map((issue) => {
+          const token = tokens[issue.index];
+          if (!token) {
+            return null;
+          }
+          return (
+            <li key={`${issue.index}-${token.text}`} className="issue-item">
+              <div className="issue-item__word">
+                <span>{token.text}</span>
+                {issue.reason ? <small>{issue.reason}</small> : null}
+              </div>
+              <div className="issue-item__actions">
+                {issue.suggestions?.length ? (
+                  issue.suggestions.map((suggestion) => (
+                    <button
+                      key={`${issue.index}-${suggestion}`}
+                      type="button"
+                      className="issue-item__chip"
+                      onClick={() => onApply(issue.index, suggestion)}
+                    >
+                      {suggestion}
+                    </button>
+                  ))
+                ) : (
+                  <span className="issue-item__no-options">No suggestions yet</span>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    )}
+  </div>
+);
+
+SpellIssueList.propTypes = {
+  issues: PropTypes.arrayOf(
+    PropTypes.shape({
+      index: PropTypes.number.isRequired,
+      reason: PropTypes.string,
+      suggestions: PropTypes.arrayOf(PropTypes.string)
+    })
+  ).isRequired,
+  tokens: PropTypes.arrayOf(
+    PropTypes.shape({
+      text: PropTypes.string.isRequired
+    })
+  ).isRequired,
+  onApply: PropTypes.func.isRequired
+};
+
+const SuggestionOrbit = ({ suggestions, onSelect, disabled }) => (
+  <div className="suggestion-orbit" role="list">
+    {suggestions.length === 0 ? (
+      <div className="suggestion-orbit__hint">Start writing to see gentle prompts.</div>
+    ) : (
+      suggestions.map((suggestion) => (
+        <button
+          key={suggestion}
+          type="button"
+          className="suggestion-ghost"
+          onClick={() => onSelect(suggestion)}
+          disabled={disabled}
+        >
+          {suggestion}
+        </button>
+      ))
+    )}
+  </div>
+);
+
+SuggestionOrbit.propTypes = {
+  suggestions: PropTypes.arrayOf(PropTypes.string).isRequired,
+  onSelect: PropTypes.func.isRequired,
+  disabled: PropTypes.bool
+};
+
+SuggestionOrbit.defaultProps = {
+  disabled: false
+};
+
+const getLevelTip = (wordTotal, supportLevel) => {
+  if (wordTotal === 0) {
+    return 'Drop in a sentence starter to begin your idea.';
+  }
+  if (wordTotal < 6) {
+    return 'Try adding a describing word or feeling to paint the picture.';
+  }
+  if (supportLevel === 'beginner') {
+    return 'Can you join two ideas with “and” or “because” next?';
+  }
+  if (supportLevel === 'intermediate') {
+    return 'See if you can add a connective or a time word to guide the reader.';
+  }
+  return 'Challenge yourself with a precise verb or a contrasting conjunction.';
+};
+
+const fetchAnalysis = async ({ text, tokens, signature }) => {
+  const response = await fetch('/.netlify/functions/writingAnalysis', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ text, tokens, signature })
+  });
+  if (!response.ok) {
+    throw new Error('Analysis request failed');
+  }
+  return response.json();
+};
+
+const fetchSpeech = async ({ text, voice }) => {
+  const response = await fetch('/.netlify/functions/textToSpeech', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ text, voice })
+  });
+  if (!response.ok) {
+    throw new Error('Unable to synthesise speech');
+  }
+  return response.json();
+};
+
 const EALDocs = () => {
   const editorRef = useRef(null);
   const fileInputRef = useRef(null);
-  const [docTitle, setDocTitle] = useState('Untitled EAL Doc');
+  const audioRef = useRef(null);
+  const decorateLockRef = useRef(false);
+  const latestSignatureRef = useRef('');
+  const requestCounterRef = useRef(0);
+
+  const [docTitle, setDocTitle] = useState('Writer Orbit');
   const [supportLevel, setSupportLevel] = useState('beginner');
   const [activeCategory, setActiveCategory] = useState(wordBankCategories[0].id);
   const [wordCount, setWordCount] = useState(0);
-  const [focusTip, setFocusTip] = useState('Start by choosing a sentence starter from the bank.');
+  const [focusTip, setFocusTip] = useState('Drop in a sentence starter to begin your idea.');
   const [plainText, setPlainText] = useState('');
-  const [caretContext, setCaretContext] = useState({
-    prefix: '',
-    previousWord: '',
-    textBeforeCaret: ''
-  });
-  const [spellIssues, setSpellIssues] = useState([]);
-  const [spellLoading, setSpellLoading] = useState(false);
+  const [tokenData, setTokenData] = useState([]);
+  const [analysis, setAnalysis] = useState(EMPTY_ANALYSIS);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState('');
   const [grammarInsights, setGrammarInsights] = useState({ met: [], targets: [] });
-
-  const {
-    supported: speechSupported,
-    voices: voiceOptions,
-    selectedVoice,
-    setSelectedVoice,
-    speak,
-    cancel: cancelSpeech,
-    pause,
-    resume,
-    speaking,
-    paused
-  } = useSpeechSynthesis({ preferredLang: 'en-GB' });
+  const [caretContext, setCaretContext] = useState({ prefix: '', previousWord: '', textBeforeCaret: '' });
+  const [ttsStatus, setTtsStatus] = useState('idle');
+  const [ttsError, setTtsError] = useState('');
 
   const categoriesForLevel = useMemo(
     () =>
@@ -136,39 +342,38 @@ const EALDocs = () => {
     [supportLevel]
   );
 
-  const categoryLookup = useMemo(() => {
-    const lookup = new Map();
-    categoriesForLevel.forEach((category) => {
-      lookup.set(category.id, category);
-    });
-    return lookup;
-  }, [categoriesForLevel]);
-
   useEffect(() => {
-    initializeSpellChecker().catch((error) =>
-      console.error('Spell checker initialisation failed', error)
-    );
-  }, []);
-
-  useEffect(() => {
-    const availableCategories = categoriesForLevel.filter((category) => category.items.length > 0);
-    if (!availableCategories.length) {
+    const available = categoriesForLevel.filter((category) => category.items.length > 0);
+    if (!available.length) {
       return;
     }
-    if (!availableCategories.find((category) => category.id === activeCategory)) {
-      setActiveCategory(availableCategories[0].id);
+    if (!available.find((category) => category.id === activeCategory)) {
+      setActiveCategory(available[0].id);
     }
   }, [activeCategory, categoriesForLevel]);
 
-  const uniqueWordList = useMemo(
-    () => flattenWordBank(wordBankCategories, supportLevel),
-    [supportLevel]
+  const activeCategoryData = useMemo(
+    () => categoriesForLevel.find((category) => category.id === activeCategory),
+    [categoriesForLevel, activeCategory]
   );
+
+  const syncEditorState = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    const currentText = editor.innerText.replace(/\u00a0/g, ' ');
+    const trimmed = currentText.trim();
+    setPlainText(currentText);
+    setWordCount(trimmed ? trimmed.split(/\s+/).length : 0);
+    const tokens = extractTokens(currentText);
+    setTokenData(tokens);
+    latestSignatureRef.current = computeSignature(tokens);
+  }, []);
 
   const updateCaretContext = useCallback(() => {
     const editor = editorRef.current;
     const selection = window.getSelection();
-
     if (!editor || !selection || !selection.rangeCount) {
       setCaretContext({ prefix: '', previousWord: '', textBeforeCaret: '' });
       return;
@@ -195,40 +400,19 @@ const EALDocs = () => {
     setCaretContext({ prefix, previousWord, textBeforeCaret: trimmed });
   }, []);
 
-  useEffect(() => {
-    const handleSelectionChange = () => updateCaretContext();
-    document.addEventListener('selectionchange', handleSelectionChange);
-    return () => document.removeEventListener('selectionchange', handleSelectionChange);
-  }, [updateCaretContext]);
-
-  useEffect(() => {
-    const editor = editorRef.current;
-    if (editor) {
-      editor.dataset.hasContent = 'false';
-    }
-  }, []);
-
-  const syncEditorState = useCallback(() => {
-    const editor = editorRef.current;
-    if (!editor) {
-      return;
-    }
-    const currentText = editor.innerText.replace(/\u00a0/g, ' ');
-    setPlainText(currentText);
-    const words = currentText.trim() ? currentText.trim().split(/\s+/) : [];
-    setWordCount(words.length);
-    editor.dataset.hasContent = words.length > 0 ? 'true' : 'false';
-  }, []);
-
-  const applyCommand = useCallback((command, value) => {
-    const editor = editorRef.current;
-    if (!editor) {
-      return;
-    }
-    ensureEditorFocus(editor);
-    document.execCommand(command, false, value);
-    updateCaretContext();
-  }, [updateCaretContext]);
+  const applyCommand = useCallback(
+    (command, value) => {
+      const editor = editorRef.current;
+      if (!editor) {
+        return;
+      }
+      ensureEditorFocus(editor);
+      document.execCommand(command, false, value);
+      updateCaretContext();
+      syncEditorState();
+    },
+    [syncEditorState, updateCaretContext]
+  );
 
   const insertTextAtCursor = useCallback(
     (text) => {
@@ -244,6 +428,29 @@ const EALDocs = () => {
     [syncEditorState, updateCaretContext]
   );
 
+  const handleSuggestionSelect = useCallback(
+    (suggestion) => {
+      const editor = editorRef.current;
+      if (!editor) {
+        return;
+      }
+      ensureEditorFocus(editor);
+      const prefix = caretContext.prefix;
+      if (prefix && suggestion.toLowerCase().startsWith(prefix.toLowerCase())) {
+        const remainder = suggestion.slice(prefix.length);
+        const addition = remainder.endsWith(' ') ? remainder : `${remainder} `;
+        document.execCommand('insertText', false, addition);
+      } else {
+        const needsSpace = !/[.!?,]$/.test(suggestion);
+        const addition = needsSpace ? `${suggestion} ` : suggestion;
+        document.execCommand('insertText', false, addition);
+      }
+      syncEditorState();
+      updateCaretContext();
+    },
+    [caretContext.prefix, syncEditorState, updateCaretContext]
+  );
+
   const handleWordInsert = useCallback(
     (item) => {
       const addition = item.text.endsWith(' ') ? item.text : `${item.text} `;
@@ -252,68 +459,22 @@ const EALDocs = () => {
     [insertTextAtCursor]
   );
 
-  const replaceWordInEditor = useCallback((targetWord, replacementWord) => {
-    const editor = editorRef.current;
-    if (!editor) {
-      return false;
-    }
-    const regex = new RegExp(`\\b${escapeRegExp(targetWord)}\\b`, 'i');
-    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      const node = walker.currentNode;
-      const { textContent } = node;
-      const match = regex.exec(textContent);
-      if (match) {
-        const before = textContent.slice(0, match.index);
-        const after = textContent.slice(match.index + match[0].length);
-        node.textContent = `${before}${replacementWord}${after}`;
-        return true;
+  const handleSpellApply = useCallback(
+    (tokenIndex, suggestion) => {
+      const editor = editorRef.current;
+      if (!editor) {
+        return;
       }
-    }
-    return false;
-  }, []);
-
-  const handleSpellSuggestionApply = useCallback(
-    (original, suggestion) => {
-      if (replaceWordInEditor(original, suggestion)) {
-        syncEditorState();
-        updateCaretContext();
+      const target = editor.querySelector(`span[data-index="${tokenIndex}"]`);
+      if (!target) {
+        return;
       }
+      target.textContent = suggestion;
+      syncEditorState();
+      updateCaretContext();
     },
-    [replaceWordInEditor, syncEditorState, updateCaretContext]
+    [syncEditorState, updateCaretContext]
   );
-
-  const handleGrammarRecommendation = useCallback(
-    (text) => {
-      const addition = text.endsWith(' ') ? text : `${text} `;
-      insertTextAtCursor(addition);
-    },
-    [insertTextAtCursor]
-  );
-
-  const handleSpeakDocument = useCallback(() => {
-    const editor = editorRef.current;
-    const content = editor?.innerText ?? '';
-    if (content.trim()) {
-      speak(content);
-    }
-  }, [speak]);
-
-  const handlePauseResume = useCallback(() => {
-    if (paused) {
-      resume();
-    } else {
-      pause();
-    }
-  }, [pause, resume, paused]);
-
-  const handleStopSpeech = useCallback(() => {
-    cancelSpeech();
-  }, [cancelSpeech]);
-
-  const handleImportClick = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
 
   const handleFileImport = useCallback(
     (event) => {
@@ -321,7 +482,6 @@ const EALDocs = () => {
       if (!file) {
         return;
       }
-
       const reader = new FileReader();
       reader.onload = () => {
         const text = typeof reader.result === 'string' ? reader.result : '';
@@ -333,9 +493,7 @@ const EALDocs = () => {
         syncEditorState();
         updateCaretContext();
       };
-
       reader.readAsText(file);
-      // reset input so the same file can be chosen again
       event.target.value = '';
     },
     [syncEditorState, updateCaretContext]
@@ -351,140 +509,218 @@ const EALDocs = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    const safeTitle = docTitle.trim() || 'eal-doc';
-    link.download = `${safeTitle}.txt`;
+    link.download = `${docTitle.trim() || 'writing'}.txt`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   }, [docTitle]);
 
-  const suggestions = useMemo(
-    () =>
-      generatePredictiveSuggestions({
-        caretContext,
-        categoryLookup,
-        uniqueWordList,
-        grammarTargets: grammarInsights.targets,
-        supportLevel
-      }),
-    [caretContext, categoryLookup, uniqueWordList, grammarInsights.targets, supportLevel]
-  );
+  const decorateEditor = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+    if (decorateLockRef.current) {
+      return;
+    }
+    const signature = computeSignature(tokenData);
+    if (!analysis.signature || analysis.signature !== signature) {
+      return;
+    }
 
-  const handleSuggestionSelect = useCallback(
-    (suggestion) => {
-      const editor = editorRef.current;
-      if (!editor) {
-        return;
-      }
-
-      const prefix = caretContext.prefix;
-      ensureEditorFocus(editor);
-
-      if (prefix && suggestion.toLowerCase().startsWith(prefix.toLowerCase())) {
-        const remainder = suggestion.slice(prefix.length);
-        const insertion = remainder.endsWith(' ') ? remainder : `${remainder} `;
-        document.execCommand('insertText', false, insertion);
+    const caretOffset = getCaretOffset(editor);
+    const text = plainText;
+    const classLookup = new Map();
+    analysis.word_classes.forEach((entry) => {
+      if (WORD_CLASS_COLORS[entry.class]) {
+        classLookup.set(entry.index, entry.class);
       } else {
-        const needsSpace = !/[.!?,]$/.test(suggestion);
-        const addition = needsSpace ? `${suggestion} ` : suggestion;
-        document.execCommand('insertText', false, addition);
+        classLookup.set(entry.index, 'other');
       }
+    });
+    const spellingLookup = new Set(analysis.spelling.map((issue) => issue.index));
 
-      syncEditorState();
-      updateCaretContext();
-    },
-    [caretContext.prefix, syncEditorState, updateCaretContext]
-  );
+    let cursor = 0;
+    const fragments = [];
+    tokenData.forEach((token, index) => {
+      if (cursor < token.start) {
+        fragments.push(escapeHtml(text.slice(cursor, token.start)));
+      }
+      const classes = ['writing-token'];
+      const cls = classLookup.get(index);
+      if (cls) {
+        classes.push(`writing-token--${cls}`);
+      }
+      if (spellingLookup.has(index)) {
+        classes.push('writing-token--error');
+      }
+      fragments.push(
+        `<span data-index="${index}" class="${classes.join(' ')}">${escapeHtml(token.text)}</span>`
+      );
+      cursor = token.end;
+    });
+    if (cursor < text.length) {
+      fragments.push(escapeHtml(text.slice(cursor)));
+    }
 
-  const handleEditorInput = useCallback(
-    () => {
-      syncEditorState();
-      updateCaretContext();
-    },
-    [syncEditorState, updateCaretContext]
-  );
+    const html = fragments.join('');
+    if (editor.innerHTML === html) {
+      return;
+    }
 
-  const handleEditorFocus = useCallback(() => {
+    decorateLockRef.current = true;
+    editor.innerHTML = html;
+    restoreCaretOffset(editor, caretOffset);
     updateCaretContext();
-  }, [updateCaretContext]);
+    decorateLockRef.current = false;
+  }, [analysis, plainText, tokenData, updateCaretContext]);
+
+  const handleEditorInput = useCallback(() => {
+    if (decorateLockRef.current) {
+      return;
+    }
+    syncEditorState();
+    updateCaretContext();
+  }, [syncEditorState, updateCaretContext]);
+
+  useEffect(() => {
+    syncEditorState();
+  }, [syncEditorState]);
 
   useEffect(() => {
     const trimmed = plainText.trim();
     if (!trimmed) {
-      setFocusTip('Start by choosing a sentence starter from the word bank.');
+      setFocusTip('Drop in a sentence starter to begin your idea.');
+      setGrammarInsights({ met: [], targets: [] });
       return;
     }
-
     const wordTotal = trimmed.split(/\s+/).length;
-    if (wordTotal < 5) {
-      setFocusTip('Can you add a describing word to give more detail?');
-      return;
-    }
-
-    if (!/[.!?]$/.test(trimmed)) {
-      setFocusTip('Finish the sentence with a full stop, question mark, or exclamation mark.');
-      return;
-    }
-
-    if (getLevelRank(supportLevel) >= levelRank.intermediate) {
-      setFocusTip('Try adding a connector like "because" or "after that" to join ideas.');
-      return;
-    }
-
-    setFocusTip('Great writing! Could you add how the person feels?');
+    setFocusTip(getLevelTip(wordTotal, supportLevel));
+    setGrammarInsights(evaluateGrammarAgainstCurriculum(plainText));
   }, [plainText, supportLevel]);
 
   useEffect(() => {
-    setGrammarInsights(evaluateGrammarAgainstCurriculum(plainText));
-  }, [plainText]);
+    const trimmed = plainText.trim();
+    if (!trimmed) {
+      setAnalysis(EMPTY_ANALYSIS);
+      setAnalysisLoading(false);
+      setAnalysisError('');
+      return;
+    }
 
-  useEffect(() => {
-    let cancelled = false;
+    const signature = latestSignatureRef.current;
+    const tokens = tokenData.map((token) => token.text);
+    const requestId = ++requestCounterRef.current;
+    setAnalysisLoading(true);
+    setAnalysisError('');
 
-    const runAnalysis = async () => {
-      const trimmed = plainText.trim();
-      if (!trimmed) {
-        if (!cancelled) {
-          setSpellIssues([]);
-          setSpellLoading(false);
-        }
-        return;
-      }
-
-      setSpellLoading(true);
+    const handler = setTimeout(async () => {
       try {
-        const issues = await analyseSpelling(trimmed);
-        if (!cancelled) {
-          setSpellIssues(issues);
+        const payload = await fetchAnalysis({ text: trimmed, tokens, signature });
+        if (requestId !== requestCounterRef.current) {
+          return;
         }
+        setAnalysis({
+          signature: payload.signature ?? signature,
+          suggestions: payload.suggestions ?? [],
+          word_classes: payload.word_classes ?? [],
+          spelling: payload.spelling ?? []
+        });
       } catch (error) {
-        console.error('Spell analysis failed', error);
-        if (!cancelled) {
-          setSpellIssues([]);
+        if (requestId === requestCounterRef.current) {
+          setAnalysis(EMPTY_ANALYSIS);
+          setAnalysisError('We could not refresh AI support just now.');
         }
       } finally {
-        if (!cancelled) {
-          setSpellLoading(false);
+        if (requestId === requestCounterRef.current) {
+          setAnalysisLoading(false);
         }
       }
-    };
-
-    runAnalysis();
+    }, 600);
 
     return () => {
-      cancelled = true;
+      clearTimeout(handler);
     };
+  }, [plainText, tokenData]);
+
+  useEffect(() => {
+    decorateEditor();
+  }, [decorateEditor]);
+
+  useEffect(() => () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      URL.revokeObjectURL(audioRef.current.src);
+    }
+  }, []);
+
+  const handleSpeakDocument = useCallback(async () => {
+    const text = plainText.trim();
+    if (!text) {
+      return;
+    }
+    try {
+      setTtsStatus('loading');
+      setTtsError('');
+      const payload = await fetchSpeech({ text, voice: 'alloy' });
+      const binary = Uint8Array.from(atob(payload.audio), (char) => char.charCodeAt(0));
+      const blob = new Blob([binary], { type: 'audio/mpeg' });
+      const url = URL.createObjectURL(blob);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        URL.revokeObjectURL(audioRef.current.src);
+      }
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => setTtsStatus('idle');
+      audio.onerror = () => setTtsStatus('idle');
+      await audio.play();
+      setTtsStatus('playing');
+    } catch (error) {
+      setTtsError('Unable to play AI voice just now.');
+      setTtsStatus('idle');
+    }
   }, [plainText]);
 
-  const activeCategoryData = categoryLookup.get(activeCategory);
-  const activeItems = activeCategoryData?.items ?? [];
-  const curriculumTargets = grammarInsights.targets;
-  const achievedGrammar = grammarInsights.met;
-  const hasContent = plainText.trim().length > 0;
+  const handlePauseResume = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+    if (ttsStatus === 'playing') {
+      audio.pause();
+      setTtsStatus('paused');
+    } else if (ttsStatus === 'paused') {
+      audio.play();
+      setTtsStatus('playing');
+    }
+  }, [ttsStatus]);
+
+  const handleStopSpeech = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+    audio.pause();
+    audio.currentTime = 0;
+    setTtsStatus('idle');
+  }, []);
+
+  const usedClasses = useMemo(() => {
+    const seen = new Set();
+    analysis.word_classes.forEach((entry) => {
+      if (WORD_CLASS_COLORS[entry.class]) {
+        seen.add(entry.class);
+      } else {
+        seen.add('other');
+      }
+    });
+    return Array.from(seen);
+  }, [analysis.word_classes]);
 
   return (
-    <div className="app-shell">
+    <div className="studio-shell">
       <input
         ref={fileInputRef}
         type="file"
@@ -492,325 +728,203 @@ const EALDocs = () => {
         className="visually-hidden"
         onChange={handleFileImport}
       />
-      <header className="app-toolbar">
-        <div className="app-toolbar__left">
-          <div className="app-logo">
-            <FileText size={20} />
+
+      <header className="studio-toolbar">
+        <div className="studio-toolbar__main">
+          <div className="studio-toolbar__logo">
+            <Sparkles size={22} />
           </div>
-          <div className="doc-meta">
+          <div className="studio-toolbar__meta">
             <input
-              className="doc-title-input"
+              className="studio-title"
               value={docTitle}
               onChange={(event) => setDocTitle(event.target.value)}
               aria-label="Document title"
             />
-            <nav className="doc-menu">
-              <span>File</span>
-              <span>Edit</span>
-              <span>Insert</span>
-              <span>Format</span>
-              <span>Tools</span>
-              <span>Help</span>
-            </nav>
+            <div className="studio-toolbar__actions">
+              <button type="button" onClick={() => fileInputRef.current?.click()}>
+                <Upload size={16} /> Import
+              </button>
+              <button type="button" onClick={handleExport}>
+                <Download size={16} /> Export
+              </button>
+              <button type="button" className="studio-toolbar__share">
+                <Share2 size={16} /> Share
+              </button>
+            </div>
           </div>
         </div>
-        <div className="app-toolbar__right">
-          <div className="support-selector">
-            <Languages size={16} />
-            <label htmlFor="support-level">Support level</label>
-            <select
-              id="support-level"
-              value={supportLevel}
-              onChange={(event) => setSupportLevel(event.target.value)}
-            >
+        <div className="studio-toolbar__right">
+          <label className="studio-select">
+            <span>Support level</span>
+            <select value={supportLevel} onChange={(event) => setSupportLevel(event.target.value)}>
               <option value="beginner">Beginner</option>
               <option value="intermediate">Intermediate</option>
               <option value="advanced">Advanced</option>
             </select>
-          </div>
-          <button type="button" className="share-button">
-            <Share2 size={16} />
-            Share support doc
-          </button>
+          </label>
         </div>
       </header>
 
-      <div className="format-toolbar">
-        <ToolbarButton icon={Bold} label="Bold" onClick={() => applyCommand('bold')} />
-        <ToolbarButton icon={Italic} label="Italic" onClick={() => applyCommand('italic')} />
-        <ToolbarButton icon={Underline} label="Underline" onClick={() => applyCommand('underline')} />
-        <ToolbarButton icon={Highlighter} label="Highlight" onClick={() => applyCommand('hiliteColor', '#fff3b0')} />
-        <div className="format-toolbar__divider" />
-        <ToolbarButton icon={AlignLeft} label="Align left" onClick={() => applyCommand('justifyLeft')} />
-        <ToolbarButton icon={AlignCenter} label="Align centre" onClick={() => applyCommand('justifyCenter')} />
-        <ToolbarButton icon={AlignJustify} label="Justify" onClick={() => applyCommand('justifyFull')} />
-        <div className="format-toolbar__divider" />
-        <ToolbarButton icon={List} label="Bullet list" onClick={() => applyCommand('insertUnorderedList')} />
-        <ToolbarButton icon={ListOrdered} label="Numbered list" onClick={() => applyCommand('insertOrderedList')} />
-        <div className="format-toolbar__spacer" />
-        <button type="button" className="format-button" onClick={handleImportClick}>
-          <Upload size={16} />
-          <span>Import</span>
-        </button>
-        <button type="button" className="format-button" onClick={handleExport}>
-          <Download size={16} />
-          <span>Export</span>
-        </button>
-      </div>
-
-      <div className="doc-layout">
-        <div className="doc-wrapper">
-          <div className="suggestion-bar">
-            <div className="suggestion-bar__header">
-              <Sparkles size={16} />
-              <span>Smart suggestions</span>
-              <SupportLevelBadge level={supportLevel} />
+      <div className="studio-grid">
+        <aside className="studio-panel studio-panel--left">
+          <div className="panel-card">
+            <div className="panel-card__header">
+              <BookOpen size={18} />
+              <div>
+                <h3>Word orbit</h3>
+                <p>Tap a word to pull it into your writing.</p>
+              </div>
             </div>
-            <div className="suggestion-bar__chips">
-              {suggestions.length ? (
-                suggestions.map((suggestion) => (
-                  <SuggestionChip
-                    key={`${suggestion}-${supportLevel}`}
-                    text={suggestion}
-                    onSelect={handleSuggestionSelect}
-                  />
+            <div className="studio-tabs">
+              {categoriesForLevel
+                .filter((category) => category.items.length > 0)
+                .map((category) => (
+                  <button
+                    key={category.id}
+                    type="button"
+                    className={`studio-tab ${activeCategory === category.id ? 'studio-tab--active' : ''}`}
+                    onClick={() => setActiveCategory(category.id)}
+                  >
+                    <span className="studio-tab__dot" style={{ backgroundColor: category.color }} />
+                    {category.label}
+                  </button>
+                ))}
+            </div>
+            <div className="studio-wordbank">
+              {activeCategoryData?.items?.length ? (
+                activeCategoryData.items.map((item) => (
+                  <WordBankItem key={item.text} item={item} onInsert={handleWordInsert} />
                 ))
               ) : (
-                <span className="suggestion-empty">Type a word to see ideas appear here.</span>
+                <p className="panel-card__empty">No words at this level yet.</p>
               )}
             </div>
           </div>
-
-          <div className="tts-controls">
-            <div className="tts-controls__summary">
-              <Volume2 size={22} />
-              <div>
-                <h3>Read aloud</h3>
-                <p>Hear your ideas in a natural UK English voice.</p>
-              </div>
-            </div>
-            {speechSupported ? (
-              <div className="tts-controls__actions">
-                {voiceOptions.length ? (
-                  <select
-                    className="tts-select"
-                    value={selectedVoice}
-                    onChange={(event) => setSelectedVoice(event.target.value)}
-                    aria-label="Choose a speaking voice"
-                  >
-                    {voiceOptions.map((voice) => (
-                      <option key={voice.name} value={voice.name}>
-                        {voice.label}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <span className="tts-voice-loading">Loading voices…</span>
-                )}
-                <div className="tts-controls__buttons">
-                  <button
-                    type="button"
-                    className="tts-button"
-                    onClick={handleSpeakDocument}
-                    disabled={!hasContent}
-                  >
-                    <PlayCircle size={20} />
-                    {speaking && !paused ? 'Restart' : 'Play'}
-                  </button>
-                  <button
-                    type="button"
-                    className="tts-button"
-                    onClick={handlePauseResume}
-                    disabled={!speaking}
-                  >
-                    {paused ? <PlayCircle size={20} /> : <PauseCircle size={20} />}
-                    {paused ? 'Resume' : 'Pause'}
-                  </button>
-                  <button
-                    type="button"
-                    className="tts-button"
-                    onClick={handleStopSpeech}
-                    disabled={!speaking}
-                  >
-                    <StopCircle size={20} />
-                    Stop
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <p className="tts-controls__unsupported">Speech synthesis is not available on this device.</p>
-            )}
-          </div>
-
-          <div className="doc-page-wrapper">
-            <div
-              ref={editorRef}
-              className="doc-page"
-              contentEditable
-              role="textbox"
-              aria-label="Document editor"
-              spellCheck
-              data-placeholder="Type your ideas here..."
-              onInput={handleEditorInput}
-              onKeyUp={updateCaretContext}
-              onMouseUp={updateCaretContext}
-              onFocus={handleEditorFocus}
-              suppressContentEditableWarning
-            />
-          </div>
-
-          <div className="doc-status-bar">
-            <span>{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
-            <span className="doc-status-bar__tip">{focusTip}</span>
-          </div>
-        </div>
-
-        <aside className="scaffold-panel">
-          <div className="scaffold-panel__header">
-            <BookOpen size={18} />
-            <div>
-              <h2>Word bank</h2>
-              <p>Tap a word or phrase to add it to your document.</p>
-            </div>
-          </div>
-
-          <div className="word-bank-tabs">
-            {categoriesForLevel
-              .filter((category) => category.items.length > 0)
-              .map((category) => (
-                <button
-                  key={category.id}
-                  type="button"
-                  className={`word-bank-tab ${activeCategory === category.id ? 'word-bank-tab--active' : ''}`}
-                  onClick={() => setActiveCategory(category.id)}
-                >
-                  <span className="word-bank-tab__dot" style={{ backgroundColor: category.color }} />
-                  {category.label}
-                </button>
-              ))}
-          </div>
-
-          <div className="word-bank-items">
-            {activeItems.length ? (
-              activeItems.map((item) => (
-                <WordBankItem key={item.text} item={item} onInsert={handleWordInsert} />
-              ))
-            ) : (
-              <p className="word-bank-empty">No words at this support level yet. Try a different level.</p>
-            )}
-          </div>
-
-          <div className="support-card">
+          <div className="panel-card">
             <h3>Writing coach</h3>
             <p>{focusTip}</p>
-            <ul>
-              <li>Use the connectors tab to join short sentences.</li>
-              <li>Try saying your sentence aloud before writing it.</li>
-              <li>Remember to check punctuation at the end.</li>
+            <ul className="panel-hints">
+              <li>Use colour-coded words to spot missing ingredients.</li>
+              <li>Click a grey whisper to add it instantly.</li>
+              <li>Listen back to hear how your sentence flows.</li>
             </ul>
           </div>
+        </aside>
 
-          <div className="insight-card">
-            <div className="insight-card__header">
-              <AlertTriangle size={18} />
+        <main className="studio-canvas">
+          <div className="canvas-toolbar">
+            <ToolbarButton icon={Bold} label="Bold" onClick={() => applyCommand('bold')} />
+            <ToolbarButton icon={Italic} label="Italic" onClick={() => applyCommand('italic')} />
+            <ToolbarButton icon={Underline} label="Underline" onClick={() => applyCommand('underline')} />
+            <ToolbarButton icon={Highlighter} label="Highlight" onClick={() => applyCommand('backColor', '#fff176')} />
+            <span className="canvas-toolbar__divider" />
+            <ToolbarButton icon={AlignLeft} label="Align left" onClick={() => applyCommand('justifyLeft')} />
+            <ToolbarButton icon={AlignCenter} label="Align centre" onClick={() => applyCommand('justifyCenter')} />
+            <ToolbarButton icon={AlignJustify} label="Justify" onClick={() => applyCommand('justifyFull')} />
+          </div>
+
+          <section className="writing-orbit">
+            <div className="writing-halo">
+              <div className="writing-editor__wrapper">
+                <div
+                  ref={editorRef}
+                  className="writing-editor"
+                  role="textbox"
+                  contentEditable
+                  spellCheck
+                  aria-label="Writing canvas"
+                  data-placeholder="Bring your words to the centre..."
+                  onInput={handleEditorInput}
+                  onFocus={updateCaretContext}
+                  onKeyUp={updateCaretContext}
+                  onMouseUp={updateCaretContext}
+                  suppressContentEditableWarning
+                />
+                {analysisLoading ? (
+                  <div className="writing-overlay">
+                    <Loader2 className="writing-overlay__spinner" size={32} />
+                    <span>Gathering ideas…</span>
+                  </div>
+                ) : null}
+              </div>
+              <SuggestionOrbit
+                suggestions={analysis.suggestions}
+                onSelect={handleSuggestionSelect}
+                disabled={!plainText.trim()}
+              />
+            </div>
+
+            <footer className="writing-status">
+              <div className="writing-status__count">{wordCount} {wordCount === 1 ? 'word' : 'words'}</div>
+              {analysisError ? <span className="writing-status__error">{analysisError}</span> : null}
+            </footer>
+
+            {usedClasses.length ? <ClassLegend usedClasses={usedClasses} /> : null}
+          </section>
+
+          <section className="tts-panel">
+            <div className="tts-panel__controls">
+              <button
+                type="button"
+                className="tts-button"
+                onClick={handleSpeakDocument}
+                disabled={!plainText.trim() || ttsStatus === 'loading'}
+              >
+                {ttsStatus === 'loading' ? <Loader2 size={18} className="spin" /> : <Volume2 size={18} />}
+                Listen with AI voice
+              </button>
+              <button
+                type="button"
+                className="tts-button"
+                onClick={handlePauseResume}
+                disabled={!(ttsStatus === 'playing' || ttsStatus === 'paused')}
+              >
+                {ttsStatus === 'paused' ? <PlayCircle size={18} /> : <PauseCircle size={18} />}
+                {ttsStatus === 'paused' ? 'Resume' : 'Pause'}
+              </button>
+              <button
+                type="button"
+                className="tts-button"
+                onClick={handleStopSpeech}
+                disabled={ttsStatus === 'idle'}
+              >
+                <StopCircle size={18} /> Stop
+              </button>
+            </div>
+            {ttsError ? <p className="tts-panel__error">{ttsError}</p> : null}
+          </section>
+        </main>
+
+        <aside className="studio-panel studio-panel--right">
+          <SpellIssueList issues={analysis.spelling} tokens={tokenData} onApply={handleSpellApply} />
+          <div className="panel-card">
+            <div className="panel-card__header">
+              <Sparkles size={18} />
               <div>
-                <h3>Spell check</h3>
-                <p>Uses a UK English dictionary with child-friendly filtering.</p>
+                <h3>Grammar goals</h3>
+                <p>Targets linked to curriculum milestones.</p>
               </div>
             </div>
-            {spellLoading ? (
-              <p className="insight-card__loading">Checking spelling…</p>
-            ) : !hasContent ? (
-              <p className="insight-card__loading">Start typing to see spelling support.</p>
-            ) : spellIssues.length ? (
-              <ul className="insight-list">
-                {spellIssues.map((issue) => (
-                  <li key={issue.word} className="spell-issue">
-                    <div className="spell-issue__meta">
-                      <span className="spell-issue__word">{issue.word}</span>
-                      <span className="spell-issue__count">{issue.count}×</span>
-                    </div>
-                    <div className="spell-issue__actions">
-                      {issue.suggestions.length ? (
-                        issue.suggestions.slice(0, 3).map((suggestion) => (
-                          <button
-                            key={`${issue.word}-${suggestion}`}
-                            type="button"
-                            className="spell-issue__suggestion"
-                            onClick={() => handleSpellSuggestionApply(issue.word, suggestion)}
-                          >
-                            {suggestion}
-                          </button>
-                        ))
-                      ) : (
-                        <span className="spell-issue__no-suggestion">No dictionary suggestions</span>
-                      )}
-                    </div>
+            {grammarInsights.targets.length === 0 ? (
+              <p className="panel-card__empty">Keep writing to unlock the next target.</p>
+            ) : (
+              <ul className="panel-hints">
+                {grammarInsights.targets.slice(0, 4).map((target) => (
+                  <li key={target.id}>
+                    <strong>{target.label}</strong>
+                    <br />
+                    <span>{target.description}</span>
                   </li>
                 ))}
               </ul>
-            ) : (
-              <p className="insight-card__success">No spelling concerns found.</p>
             )}
-          </div>
-
-          <div className="insight-card">
-            <div className="insight-card__header">
-              <Brain size={18} />
-              <div>
-                <h3>Grammar goals</h3>
-                <p>Aligned with the UK national curriculum grammar appendix.</p>
-              </div>
-            </div>
-            <div className="insight-card__section">
-              <h4>Next steps</h4>
-              {!hasContent ? (
-                <p className="insight-card__loading">Start writing to see curriculum goals.</p>
-              ) : curriculumTargets.length ? (
-                <ul className="insight-list">
-                  {curriculumTargets.map((target) => (
-                    <li key={target.id} className="grammar-target">
-                      <div className="grammar-target__summary">
-                        <AlertTriangle size={16} />
-                        <div>
-                          <span className="grammar-target__label">{target.label}</span>
-                          <span className="grammar-target__stage">{target.stage}</span>
-                        </div>
-                      </div>
-                      <p className="grammar-target__description">{target.description}</p>
-                      {target.suggestions?.length ? (
-                        <p className="grammar-target__tip">{target.suggestions[0]}</p>
-                      ) : null}
-                      {target.recommendationWords?.length ? (
-                        <div className="grammar-target__actions">
-                          {target.recommendationWords.slice(0, 3).map((word) => (
-                            <button
-                              key={`${target.id}-${word}`}
-                              type="button"
-                              className="grammar-target__chip"
-                              onClick={() => handleGrammarRecommendation(word)}
-                            >
-                              {word}
-                            </button>
-                          ))}
-                        </div>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="insight-card__success">You have met every grammar focus for this level.</p>
-              )}
-            </div>
-            {hasContent && achievedGrammar.length ? (
-              <div className="insight-card__section insight-card__section--success">
-                <h4>Great work</h4>
-                <ul className="insight-list insight-list--compact">
-                  {achievedGrammar.map((feature) => (
-                    <li key={feature.id} className="grammar-target grammar-target--achieved">
-                      <CheckCircle2 size={16} />
-                      <span>{feature.label}</span>
-                    </li>
+            {grammarInsights.met.length ? (
+              <div className="panel-success">
+                <h4>Already shining</h4>
+                <ul>
+                  {grammarInsights.met.slice(0, 4).map((item) => (
+                    <li key={item.id}>{item.label}</li>
                   ))}
                 </ul>
               </div>
@@ -823,4 +937,3 @@ const EALDocs = () => {
 };
 
 export default EALDocs;
-
